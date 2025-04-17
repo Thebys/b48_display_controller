@@ -826,44 +826,5 @@ void B48DisplayController::display_fallback_message() {
   this->state_change_time_ = millis();
 }
 
-// Self-Test Methods
-
-void B48DisplayController::runSelfTests() {
-    ESP_LOGI(TAG, "--- Running Self-Tests ---");
-    int pass_count = 0;
-    int fail_count = 0;
-
-    if (this->testAlwaysPasses()) {
-        pass_count++;
-    } else {
-        fail_count++;
-    }
-
-    if (this->testAlwaysFails()) {
-        pass_count++;
-    } else {
-        fail_count++;
-    }
-
-    // Add more test calls here...
-
-    ESP_LOGI(TAG, "--- Self-Test Summary --- Passed: %d, Failed: %d ---", pass_count, fail_count);
-
-    if (fail_count > 0) {
-        ESP_LOGW(TAG, "One or more self-tests failed. Check logs above.");
-        // Optionally: Add logic to handle failures, e.g., mark component as failed
-        // this->mark_failed(); 
-    }
-}
-
-bool B48DisplayController::testAlwaysPasses() {
-    ESP_LOGI(TAG, "[TEST] testAlwaysPasses: PASSED");
-    return true;
-}
-
-bool B48DisplayController::testAlwaysFails() {
-    ESP_LOGE(TAG, "[TEST] testAlwaysFails: FAILED (Intentionally)");
-    return false;
-}
 }  // namespace b48_display_controller
 }  // namespace esphome

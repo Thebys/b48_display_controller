@@ -108,6 +108,11 @@ class B48DisplayController : public Component {
   bool testAlwaysPasses();
   bool testAlwaysFails();
   
+  // Add new test declarations above here
+
+ private: // Helper for test execution
+  bool executeTest(bool (B48DisplayController::*testMethod)(), const char* testName);
+
   // Member variables
   uart::UARTComponent *uart_{nullptr};
   std::string database_path_;
