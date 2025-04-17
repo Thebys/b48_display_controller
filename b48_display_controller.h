@@ -2,6 +2,7 @@
 
 #include "esphome/core/component.h"
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/sensor/sensor.h"
 #include <vector>
 #include <string>
 #include <ctime>
@@ -16,9 +17,13 @@
 // Include the full header instead of forward declaration
 #include "b48_database_manager.h"
 #include "buse120_serial_protocol.h"
+#include "b48_ha_integration.h"
 
 namespace esphome {
 namespace b48_display_controller {
+
+// Forward declare HA integration class
+class B48HAIntegration;
 
 // Message entry structure is now defined in b48_database_manager.h
 // Don't redefine it here
@@ -61,6 +66,9 @@ class B48DisplayController : public Component {
    */
   void set_display_enable_pin(int pin) { this->display_enable_pin_ = pin; }
   
+  // HA Entity Setters (called from __init__.py)
+  void set_message_queue_size_sensor(sensor::Sensor *sensor);
+
   // Message management
   bool add_persistent_message(int priority, int line_number, int tarif_zone, 
                             const std::string &static_intro, const std::string &scrolling_message,
@@ -78,6 +86,13 @@ class B48DisplayController : public Component {
                            const std::string &static_intro, const std::string &scrolling_message,
                            const std::string &next_message_hint, int display_count = 1,
                            int ttl_seconds = 300);
+
+  // --- Public methods called by HA Integration Layer ---
+  B48DatabaseManager* get_database_manager() { return db_manager_.get(); }
+  bool clear_all_persistent_messages();
+
+  // --- Internal helper to update HA state ---
+  void update_ha_queue_size();
 
  protected:
   // Database methods
@@ -151,6 +166,12 @@ class B48DisplayController : public Component {
   
   // Threading protection
   std::mutex message_mutex_;
+
+  // HA Integration Layer instance
+  std::unique_ptr<B48HAIntegration> ha_integration_{nullptr};
+
+  // Tracking last display times for messages
+  std::map<int, time_t> last_display_times_; 
 };
 
 }  // namespace b48_display_controller

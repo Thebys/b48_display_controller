@@ -64,6 +64,10 @@ class B48DatabaseManager {
   // Maintenance
   int expire_old_messages(); // Returns number of messages expired
 
+  int get_message_count(); // <-- ADDED: Get count of active persistent messages
+
+  bool clear_all_messages(); // <-- ADDED: Method to clear all persistent messages
+
   // Bootstrapping
   bool bootstrap_default_messages();
 

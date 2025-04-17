@@ -3,6 +3,9 @@ import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_UART_ID, CONF_PIN
 from esphome.components import uart
 
+# Declare dependencies
+DEPENDENCIES = ["uart", "sensor"]
+
 # Define namespace for this component
 b48_display_controller_ns = cg.esphome_ns.namespace('b48_display_controller')
 # Define the component class, which inherits from esphome.Component

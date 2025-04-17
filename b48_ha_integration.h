@@ -1,0 +1,54 @@
+#pragma once
+
+#include "esphome/core/component.h"
+#include "esphome/components/sensor/sensor.h"
+#include "esphome/components/api/custom_api_device.h"
+#include <string> // Include string header
+#include <vector> // Include vector header
+
+// Forward declaration
+namespace esphome {
+namespace b48_display_controller {
+
+class B48DisplayController;
+
+class B48HAIntegration : public Component, public api::CustomAPIDevice {
+ public:
+  explicit B48HAIntegration(B48DisplayController *parent) : parent_(parent) {}
+
+  void setup() override;
+  void dump_config() override;
+  float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; } // Needs API connection
+
+  // --- Setters for Entities (called from parent) ---
+  void set_message_queue_size_sensor(sensor::Sensor *sensor) { this->message_queue_size_sensor_ = sensor; }
+
+  // --- Update methods for Entities (called from parent) ---
+  void publish_queue_size(int size);
+
+ protected:
+  // --- Service Registration Method ---
+  void register_services_();
+
+  // --- Service Handler Methods ---
+  void handle_add_message_service_(int priority, int line_number, int tarif_zone,
+                                   std::string scrolling_message, std::string static_intro,
+                                   std::string next_message_hint, int duration_seconds, std::string source_info);
+
+  void handle_delete_message_service_(int message_id);
+
+  void handle_clear_all_messages_service_();
+
+  void handle_display_ephemeral_message_service_(int priority, int line_number, int tarif_zone,
+                                                  std::string scrolling_message, std::string static_intro,
+                                                  std::string next_message_hint, int display_count, int ttl_seconds);
+
+  // --- Member Variables ---
+  B48DisplayController *parent_; // Pointer to the main controller component
+
+  // Exposed Entities
+  sensor::Sensor *message_queue_size_sensor_{nullptr};
+};
+
+} // namespace b48_display_controller
+} // namespace esphome 

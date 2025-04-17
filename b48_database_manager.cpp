@@ -517,5 +517,79 @@ bool B48DatabaseManager::bootstrap_default_messages() {
   return true;
 }
 
+// --- New Implementations ---
+
+int B48DatabaseManager::get_message_count() {
+  if (!this->db_) {
+    ESP_LOGE(TAG, "Database connection is not open. Cannot get message count.");
+    return -1; // Return -1 to indicate error
+  }
+
+  sqlite3_stmt *stmt;
+  const char *query = "SELECT COUNT(*) FROM messages;";
+  int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
+
+  if (rc != SQLITE_OK) {
+    ESP_LOGE(TAG, "Failed to prepare count statement: %s", sqlite3_errmsg(this->db_));
+    return -1; // Return -1 to indicate error
+  }
+
+  int count = -1; // Default to error value
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    count = sqlite3_column_int(stmt, 0);
+  } else {
+    ESP_LOGE(TAG, "Failed to execute count statement: %s", sqlite3_errmsg(this->db_));
+  }
+  
+  sqlite3_finalize(stmt); // Finalize the statement
+  
+  if (count != -1) {
+      ESP_LOGD(TAG, "Total message count: %d", count);
+  }
+  return count;
+}
+
+bool B48DatabaseManager::clear_all_messages() {
+  ESP_LOGW(TAG, "Clearing all messages from the database...");
+
+  if (!this->db_) {
+    ESP_LOGE(TAG, "Database connection is not open. Cannot clear messages.");
+    return false;
+  }
+
+  yield();               // Yield to the OS before potentially long operation
+  esp_task_wdt_reset();  // Reset watchdog timer
+
+  const char *delete_query = "DELETE FROM messages;";
+  char *err_msg = nullptr;
+
+  int rc = sqlite3_exec(this->db_, delete_query, nullptr, nullptr, &err_msg);
+  
+  yield();               // Yield again after the operation
+  esp_task_wdt_reset();  // Reset watchdog timer
+
+  if (rc != SQLITE_OK) {
+    ESP_LOGE(TAG, "SQL error during clear all messages: %s", err_msg);
+    sqlite3_free(err_msg);
+    return false;
+  }
+
+  int changes = sqlite3_changes(this->db_);
+  ESP_LOGI(TAG, "Successfully cleared %d messages from the database.", changes);
+  
+  // Optionally, reset the autoincrement counter if desired (use with caution)
+  // const char *reset_seq = "DELETE FROM sqlite_sequence WHERE name='messages';";
+  // rc = sqlite3_exec(this->db_, reset_seq, nullptr, nullptr, &err_msg);
+  // if (rc != SQLITE_OK) {
+  //   ESP_LOGW(TAG, "Failed to reset sequence for messages table: %s", err_msg);
+  //   sqlite3_free(err_msg); 
+  //   // Continue anyway, not critical
+  // } else {
+  //   ESP_LOGD(TAG, "Reset autoincrement sequence for messages table.");
+  // }
+
+  return true;
+}
+
 }  // namespace b48_display_controller
 }  // namespace esphome

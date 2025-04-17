@@ -134,7 +134,7 @@ bool B48DisplayController::testLittleFSMount() {
         LittleFS.remove(testFileName); // Cleanup attempt
         return false;
     }
-    String readContent = file.readStringUntil('\\n'); // Assuming single line write
+    String readContent = file.readStringUntil('\n'); // Assuming single line write
     file.close();
 
     if (readContent != testContent) {
