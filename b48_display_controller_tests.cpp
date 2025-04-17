@@ -2,6 +2,7 @@
 #include "esphome/core/log.h"
 #include <stdexcept> // Include for std::exception
 #include <functional> // Include for std::function if needed, but pointer works
+#include <LittleFS.h> // Include LittleFS header
 
 namespace esphome {
 namespace b48_display_controller {
@@ -35,28 +36,20 @@ void B48DisplayController::runSelfTests() {
     int pass_count = 0;
     int fail_count = 0;
 
-    // --- Test Suite --- 
+    // --- Test Suite ---
 
     // Use the helper function for each test
-    if (executeTest(&B48DisplayController::testAlwaysPasses, "testAlwaysPasses")) {
+    if (executeTest(&B48DisplayController::testLittleFSMount, "testLittleFSMount")) {
         pass_count++;
     } else {
         fail_count++;
     }
 
-    if (executeTest(&B48DisplayController::testAlwaysFails, "testAlwaysFails")) {
-        // This test is expected to fail, so passing is a warning
-        pass_count++; 
-        ESP_LOGW(TAG, "[WARN] testAlwaysFails completed successfully (unexpected). Check test logic.");
-    } else {
-        fail_count++;
-    }
-
-    // --- Add more test method calls here using executeTest --- 
+    // --- Add more test method calls here using executeTest ---
     // Example:
     // if (executeTest(&B48DisplayController::testDatabaseConnection, "testDatabaseConnection")) { pass_count++; } else { fail_count++; }
 
-    // --- Test Summary --- 
+    // --- Test Summary ---
     ESP_LOGI(TAG, "--- Self-Test Summary --- Passed: %d, Failed: %d ---", pass_count, fail_count);
 
     if (fail_count > 0) {
@@ -66,18 +59,59 @@ void B48DisplayController::runSelfTests() {
     }
 }
 
-bool B48DisplayController::testAlwaysPasses() {
-    // Keep logs clean for passing tests.
+bool B48DisplayController::testLittleFSMount() {
+    ESP_LOGD(TAG, "Starting LittleFS basic I/O test...");
+    const char* testFileName = "/littlefs_test.txt";
+    const char* testContent = "Hello LittleFS!";
+
+    // 1. Check if mounted (redundant if begin() is called in setup, but good practice)
+    // Note: ESP-IDF LittleFS doesn't have a direct isMounted(). We rely on begin() success in setup().
+    // We'll proceed assuming it was mounted successfully in setup.
+
+    // 2. Create and write to a file
+    File file = LittleFS.open(testFileName, "w");
+    if (!file) {
+        ESP_LOGE(TAG, "[TEST][FAIL] LittleFS: Failed to open file '%s' for writing.", testFileName);
+        return false;
+    }
+    if (file.print(testContent) != strlen(testContent)) {
+        ESP_LOGE(TAG, "[TEST][FAIL] LittleFS: Failed to write complete content to '%s'.", testFileName);
+        file.close();
+        LittleFS.remove(testFileName); // Cleanup attempt
+        return false;
+    }
+    file.close();
+    ESP_LOGD(TAG, "LittleFS: Successfully wrote to '%s'.", testFileName);
+
+    // 3. Read from the file and verify content
+    file = LittleFS.open(testFileName, "r");
+    if (!file) {
+        ESP_LOGE(TAG, "[TEST][FAIL] LittleFS: Failed to open file '%s' for reading.", testFileName);
+        LittleFS.remove(testFileName); // Cleanup attempt
+        return false;
+    }
+    String readContent = file.readStringUntil('\\n'); // Assuming single line write
+    file.close();
+
+    if (readContent != testContent) {
+        ESP_LOGE(TAG, "[TEST][FAIL] LittleFS: Read content ('%s') does not match written content ('%s') in '%s'.", readContent.c_str(), testContent, testFileName);
+        LittleFS.remove(testFileName); // Cleanup attempt
+        return false;
+    }
+    ESP_LOGD(TAG, "LittleFS: Successfully read and verified content from '%s'.", testFileName);
+
+    // 4. Delete the file
+    if (!LittleFS.remove(testFileName)) {
+        ESP_LOGE(TAG, "[TEST][FAIL] LittleFS: Failed to remove test file '%s'.", testFileName);
+        return false; // Fail the test if cleanup fails
+    }
+    ESP_LOGD(TAG, "LittleFS: Successfully removed test file '%s'.", testFileName);
+
+    ESP_LOGD(TAG, "LittleFS basic I/O test PASSED.");
     return true;
 }
 
-bool B48DisplayController::testAlwaysFails() {
-    // Log failure reason here
-    ESP_LOGE(TAG, "[TEST][FAIL] testAlwaysFails: Failing intentionally as designed.");
-    return false;
-}
-
-// --- Add implementations for other test methods here --- 
+// --- Add implementations for other test methods here ---
 // bool B48DisplayController::testDatabaseConnection() {
 //     ESP_LOGD(TAG, "Checking database connection...");
 //     if (!this->db_) {

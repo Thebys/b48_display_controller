@@ -19,18 +19,30 @@ static const char CR = 0x0D;  // Carriage Return for BUSE120 protocol
 void B48DisplayController::setup() {
   ESP_LOGCONFIG(TAG, "Setting up B48 Display Controller");
 
+  // Initialize LittleFS
+  if (!LittleFS.begin()) {
+    ESP_LOGW(TAG, "Initial mount of LittleFS failed, trying again...");
+    delay(400);
+    //The following may probably depend on your board, memory AND PARTITIONS!
+    if (!LittleFS.begin(true, "/littlefs", 4, "spiffs")) {
+      ESP_LOGE(TAG, "Failed to mount LittleFS, format attempted.");
+      this->mark_failed();
+      return;
+    }
+  }
+
   // Initialize the database
   if (!init_database()) {
     ESP_LOGE(TAG, "Failed to initialize the database");
-    //this->mark_failed();
-    //return;
+    // this->mark_failed();
+    // return;
   }
 
   // Load messages from the database
   if (!refresh_message_cache()) {
     ESP_LOGE(TAG, "Failed to load messages from the database");
-    //this->mark_failed();
-    //return;
+    // this->mark_failed();
+    // return;
   }
 
   // Initialize time tracking
@@ -42,9 +54,9 @@ void B48DisplayController::setup() {
 
   // Run self-tests if enabled
   if (this->run_tests_on_startup_) {
-      this->runSelfTests();
+    this->runSelfTests();
   } else {
-      ESP_LOGI(TAG, "Self-tests are disabled.");
+    ESP_LOGI(TAG, "Self-tests are disabled.");
   }
 }
 

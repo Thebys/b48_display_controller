@@ -105,8 +105,7 @@ class B48DisplayController : public Component {
   
   // Self-test methods
   void runSelfTests();
-  bool testAlwaysPasses();
-  bool testAlwaysFails();
+  bool testLittleFSMount();
   
   // Add new test declarations above here
 
