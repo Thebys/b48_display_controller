@@ -23,15 +23,15 @@ void B48DisplayController::setup() {
   // Initialize the database
   if (!init_database()) {
     ESP_LOGE(TAG, "Failed to initialize the database");
-    this->mark_failed();
-    return;
+    //this->mark_failed();
+    //return;
   }
 
   // Load messages from the database
   if (!refresh_message_cache()) {
     ESP_LOGE(TAG, "Failed to load messages from the database");
-    this->mark_failed();
-    return;
+    //this->mark_failed();
+    //return;
   }
 
   // Initialize time tracking
