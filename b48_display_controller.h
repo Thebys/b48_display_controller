@@ -73,7 +73,7 @@ class B48DisplayController : public Component {
   bool add_persistent_message(int priority, int line_number, int tarif_zone, 
                             const std::string &static_intro, const std::string &scrolling_message,
                             const std::string &next_message_hint, int duration_seconds = 0,
-                            const std::string &source_info = "");
+                            const std::string &source_info = "", bool check_duplicates = true);
   
   bool update_persistent_message(int message_id, int priority, bool is_enabled,
                               int line_number, int tarif_zone, const std::string &static_intro,
@@ -90,6 +90,7 @@ class B48DisplayController : public Component {
   // --- Public methods called by HA Integration Layer ---
   B48DatabaseManager* get_database_manager() { return db_manager_.get(); }
   bool clear_all_persistent_messages();
+  void dump_database_for_diagnostics();
 
   // --- Internal helper to update HA state ---
   void update_ha_queue_size();

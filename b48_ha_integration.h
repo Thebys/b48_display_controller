@@ -50,6 +50,8 @@ class B48HAIntegration : public Component, public api::CustomAPIDevice {
                                                   std::string scrolling_message, std::string static_intro,
                                                   std::string next_message_hint, int display_count, int ttl_seconds);
 
+  void handle_dump_database_service_();
+
   // --- Member Variables ---
   B48DisplayController *parent_; // Pointer to the main controller component
 

@@ -210,7 +210,7 @@ void B48DisplayController::dump_config() {
 bool B48DisplayController::add_persistent_message(int priority, int line_number, int tarif_zone,
                                                   const std::string &static_intro, const std::string &scrolling_message,
                                                   const std::string &next_message_hint, int duration_seconds,
-                                                  const std::string &source_info) {
+                                                  const std::string &source_info, bool check_duplicates) {
   if (!this->db_manager_) {
     ESP_LOGE(TAG, "Database manager is not initialized for add_persistent_message");
     return false;
@@ -221,7 +221,7 @@ bool B48DisplayController::add_persistent_message(int priority, int line_number,
   // Call the database manager to add the message
   bool success = this->db_manager_->add_persistent_message(
     priority, line_number, tarif_zone, static_intro, scrolling_message,
-    next_message_hint, duration_seconds, source_info
+    next_message_hint, duration_seconds, source_info, check_duplicates
   );
 
   if (success) {
@@ -353,7 +353,15 @@ bool B48DisplayController::refresh_message_cache() {
   // Get messages from database manager
   this->persistent_messages_ = this->db_manager_->get_active_persistent_messages();
 
-  ESP_LOGD(TAG, "Refreshed persistent message cache, loaded %d messages", this->persistent_messages_.size());
+  ESP_LOGI(TAG, "Refreshed persistent message cache, loaded %d messages", this->persistent_messages_.size());
+
+  // Log detailed information about each message for debugging
+  for (size_t i = 0; i < this->persistent_messages_.size(); i++) {
+    const auto& msg = this->persistent_messages_[i];
+    ESP_LOGD(TAG, "Message[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s'", 
+             i, msg->message_id, msg->priority, msg->line_number, msg->tarif_zone, 
+             msg->scrolling_message.substr(0, 30).c_str());
+  }
 
   // Sort persistent messages by priority (DESC) and then ID (ASC) - DB query already does this
   // Optional: Verify sort order if needed
@@ -665,6 +673,28 @@ void B48DisplayController::check_for_emergency_messages() {
     // 1. Force this->current_message_ to the emergency message.
     // 2. Send commands immediately.
     // 3. Reset the state machine to DISPLAY_MESSAGE with a longer duration.
+}
+
+void B48DisplayController::dump_database_for_diagnostics() {
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Cannot dump database - database manager is not initialized");
+    return;
+  }
+  
+  ESP_LOGI(TAG, "Dumping database for diagnostics");
+  this->db_manager_->dump_all_messages();
+  
+  // Also dump the message cache state
+  {
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
+    ESP_LOGI(TAG, "Current message cache state: %d persistent messages in cache", this->persistent_messages_.size());
+    for (size_t i = 0; i < this->persistent_messages_.size(); i++) {
+      const auto& msg = this->persistent_messages_[i];
+      ESP_LOGI(TAG, "Cache[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s'", 
+               i, msg->message_id, msg->priority, msg->line_number, msg->tarif_zone, 
+               msg->scrolling_message.c_str());
+    }
+  }
 }
 }  // namespace b48_display_controller
 }  // namespace esphome

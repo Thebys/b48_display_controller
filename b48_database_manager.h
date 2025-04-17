@@ -50,7 +50,7 @@ class B48DatabaseManager {
   bool add_persistent_message(int priority, int line_number, int tarif_zone,
                               const std::string &static_intro, const std::string &scrolling_message,
                               const std::string &next_message_hint, int duration_seconds,
-                              const std::string &source_info);
+                              const std::string &source_info, bool check_duplicates = true);
 
   bool update_persistent_message(int message_id, int priority, bool is_enabled,
                                int line_number, int tarif_zone, const std::string &static_intro,
@@ -68,12 +68,18 @@ class B48DatabaseManager {
 
   bool clear_all_messages(); // <-- ADDED: Method to clear all persistent messages
 
+  // Dump all messages (including disabled) for debugging
+  void dump_all_messages();
+
   // Bootstrapping
   bool bootstrap_default_messages();
 
  private:
   // Helper for schema creation/migration
   bool check_and_create_schema(); 
+
+  // Convert non-ASCII characters to their ASCII equivalents
+  std::string convert_to_ascii(const std::string &str);
 
   std::string database_path_;
   sqlite3 *db_{nullptr};

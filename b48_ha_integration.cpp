@@ -46,6 +46,9 @@ void B48HAIntegration::register_services_() {
                    {"priority", "line_number", "tarif_zone", "scrolling_message",
                     "static_intro", "next_message_hint", "display_count", "ttl_seconds"});
 
+  // Register service for dumping database diagnostics
+  register_service(&B48HAIntegration::handle_dump_database_service_, "dump_messages_for_diagnostics");
+
   ESP_LOGD(TAG, "Service registration complete.");
 }
 
@@ -54,8 +57,9 @@ void B48HAIntegration::register_services_() {
 void B48HAIntegration::handle_add_message_service_(int priority, int line_number, int tarif_zone,
                                                    std::string scrolling_message, std::string static_intro,
                                                    std::string next_message_hint, int duration_seconds, std::string source_info) {
-  ESP_LOGD(TAG, "Service b48_add_message called: priority=%d, line=%d, zone=%d, msg='%s'",
-           priority, line_number, tarif_zone, scrolling_message.substr(0, 20).c_str()); // Log truncated message
+  ESP_LOGI(TAG, "Service add_persistent_message called with: priority=%d, line=%d, zone=%d, msg='%s', intro='%s', next='%s', duration=%d",
+           priority, line_number, tarif_zone, scrolling_message.c_str(), static_intro.c_str(), 
+           next_message_hint.c_str(), duration_seconds);
 
   // Basic validation (can add more specific checks)
   if (scrolling_message.empty()) {
@@ -73,10 +77,12 @@ void B48HAIntegration::handle_add_message_service_(int priority, int line_number
       source_info = "HomeAssistant";
   }
 
-  // Call parent controller's method to handle DB interaction
+  ESP_LOGD(TAG, "Calling parent controller add_persistent_message with check_duplicates=false");
+  
+  // Call parent controller's method to handle DB interaction - set check_duplicates to false to allow similar messages
   bool success = parent_->add_persistent_message(priority, line_number, tarif_zone,
                                                   static_intro, scrolling_message, next_message_hint,
-                                                  duration_seconds, source_info);
+                                                  duration_seconds, source_info, false);
 
   if (success) {
     ESP_LOGI(TAG, "Persistent message added successfully via HA service.");
@@ -151,6 +157,16 @@ void B48HAIntegration::handle_display_ephemeral_message_service_(int priority, i
     ESP_LOGI(TAG, "Ephemeral message added successfully via HA service.");
   } else {
     ESP_LOGE(TAG, "Failed to add ephemeral message via HA service.");
+  }
+}
+
+void B48HAIntegration::handle_dump_database_service_() {
+  ESP_LOGI(TAG, "Service dump_messages_for_diagnostics called. Dumping all database messages.");
+  
+  if (parent_) {
+    parent_->dump_database_for_diagnostics();
+  } else {
+    ESP_LOGE(TAG, "Cannot dump database - parent controller not available.");
   }
 }
 
