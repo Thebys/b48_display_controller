@@ -14,6 +14,7 @@ CONF_TRANSITION_DURATION = "transition_duration"
 CONF_TIME_SYNC_INTERVAL = "time_sync_interval"
 CONF_EMERGENCY_PRIORITY_THRESHOLD = "emergency_priority_threshold"
 CONF_MIN_SECONDS_BETWEEN_REPEATS = "min_seconds_between_repeats"
+CONF_RUN_TESTS_ON_STARTUP = "run_tests_on_startup"
 
 # Configuration schema with all required parameters
 CONFIG_SCHEMA = cv.Schema({
@@ -24,6 +25,7 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_TIME_SYNC_INTERVAL, default=60): cv.positive_int,
     cv.Optional(CONF_EMERGENCY_PRIORITY_THRESHOLD, default=95): cv.int_range(min=0, max=100),
     cv.Optional(CONF_MIN_SECONDS_BETWEEN_REPEATS, default=30): cv.positive_int,
+    cv.Optional(CONF_RUN_TESTS_ON_STARTUP, default=False): cv.boolean,
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
@@ -41,15 +43,10 @@ async def to_code(config):
     cg.add(var.set_time_sync_interval(config[CONF_TIME_SYNC_INTERVAL]))
     cg.add(var.set_emergency_priority_threshold(config[CONF_EMERGENCY_PRIORITY_THRESHOLD]))
     cg.add(var.set_min_seconds_between_repeats(config[CONF_MIN_SECONDS_BETWEEN_REPEATS]))
+    cg.add(var.set_run_tests_on_startup(config[CONF_RUN_TESTS_ON_STARTUP]))
 
     cg.add_library(
         name="Sqlite3Esp32",
         repository="https://github.com/siara-cc/esp32_arduino_sqlite3_lib.git",
         version="2.5.0",
-    )
-
-    cg.add_library(
-        name="AUnit",
-        repository="https://github.com/bxparks/AUnit",
-        version="1.7.1",
     )

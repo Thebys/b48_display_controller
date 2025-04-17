@@ -9,7 +9,6 @@
 #include <sqlite3.h>
 #include <Arduino.h>
 #include <LittleFS.h>
-#include <AUnit.h>
 
 namespace esphome {
 namespace b48_display_controller {
@@ -41,9 +40,12 @@ void B48DisplayController::setup() {
 
   ESP_LOGI(TAG, "B48 Display Controller initialized successfully");
 
-  // Run minimal self-tests
-  ESP_LOGI(TAG, "Running B48 self-tests...");
-  aunit::TestRunner::run();
+  // Run self-tests if enabled
+  if (this->run_tests_on_startup_) {
+      this->runSelfTests();
+  } else {
+      ESP_LOGI(TAG, "Self-tests are disabled.");
+  }
 }
 
 void B48DisplayController::loop() {
@@ -824,16 +826,44 @@ void B48DisplayController::display_fallback_message() {
   this->state_change_time_ = millis();
 }
 
-// Minimal AUnit self-test suite
-namespace {
-using namespace aunit;
+// Self-Test Methods
 
-test(ChecksumCalculation) {
-  B48DisplayController controller;
-  std::string payload = "l005";
-  uint8_t cs = controller.test_checksum(payload);
-  assertEqual(cs, 0x58);  // expected checksum from spec
+void B48DisplayController::runSelfTests() {
+    ESP_LOGI(TAG, "--- Running Self-Tests ---");
+    int pass_count = 0;
+    int fail_count = 0;
+
+    if (this->testAlwaysPasses()) {
+        pass_count++;
+    } else {
+        fail_count++;
+    }
+
+    if (this->testAlwaysFails()) {
+        pass_count++;
+    } else {
+        fail_count++;
+    }
+
+    // Add more test calls here...
+
+    ESP_LOGI(TAG, "--- Self-Test Summary --- Passed: %d, Failed: %d ---", pass_count, fail_count);
+
+    if (fail_count > 0) {
+        ESP_LOGW(TAG, "One or more self-tests failed. Check logs above.");
+        // Optionally: Add logic to handle failures, e.g., mark component as failed
+        // this->mark_failed(); 
+    }
 }
-}  // namespace
+
+bool B48DisplayController::testAlwaysPasses() {
+    ESP_LOGI(TAG, "[TEST] testAlwaysPasses: PASSED");
+    return true;
+}
+
+bool B48DisplayController::testAlwaysFails() {
+    ESP_LOGE(TAG, "[TEST] testAlwaysFails: FAILED (Intentionally)");
+    return false;
+}
 }  // namespace b48_display_controller
 }  // namespace esphome

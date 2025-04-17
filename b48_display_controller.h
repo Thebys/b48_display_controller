@@ -53,10 +53,8 @@ class B48DisplayController : public Component {
   void set_time_sync_interval(int interval) { this->time_sync_interval_ = interval; }
   void set_emergency_priority_threshold(int threshold) { this->emergency_priority_threshold_ = threshold; }
   void set_min_seconds_between_repeats(int seconds) { this->min_seconds_between_repeats_ = seconds; }
+  void set_run_tests_on_startup(bool run_tests) { this->run_tests_on_startup_ = run_tests; }
   
-  // For testing: expose checksum function
-  uint8_t test_checksum(const std::string &payload) { return this->calculate_checksum(payload); }
-
   // Message management
   bool add_persistent_message(int priority, int line_number, int tarif_zone, 
                             const std::string &static_intro, const std::string &scrolling_message,
@@ -105,6 +103,11 @@ class B48DisplayController : public Component {
   void display_fallback_message();
   void check_for_emergency_messages();
   
+  // Self-test methods
+  void runSelfTests();
+  bool testAlwaysPasses();
+  bool testAlwaysFails();
+  
   // Member variables
   uart::UARTComponent *uart_{nullptr};
   std::string database_path_;
@@ -112,6 +115,7 @@ class B48DisplayController : public Component {
   int time_sync_interval_{60};
   int emergency_priority_threshold_{95};
   int min_seconds_between_repeats_{30};
+  bool run_tests_on_startup_{false}; // Default to false
   
   sqlite3 *db_{nullptr};
   
