@@ -1,8 +1,3 @@
----
-description: Message Display Controller logic and information.
-globs: 
-alwaysApply: false
----
 # Message Display Controller Algorithm Specification
 
 ## 1. Overview

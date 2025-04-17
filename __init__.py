@@ -1,22 +1,55 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.const import CONF_ID
+from esphome.const import CONF_ID, CONF_UART_ID
+from esphome.components import uart
 
-# Definuje namespace pro tuto komponentu
+# Define namespace for this component
 b48_display_controller_ns = cg.esphome_ns.namespace('b48_display_controller')
-# Definuje třídu komponenty, která dědí z esphome.Component
+# Define the component class, which inherits from esphome.Component
 B48DisplayController = b48_display_controller_ns.class_('B48DisplayController', cg.Component)
 
-# Definuje konfigurační schéma. Prozatím prázdné, jen vyžaduje ID.
+# Configuration constants
+CONF_DATABASE_PATH = "database_path"
+CONF_TRANSITION_DURATION = "transition_duration"
+CONF_TIME_SYNC_INTERVAL = "time_sync_interval"
+CONF_EMERGENCY_PRIORITY_THRESHOLD = "emergency_priority_threshold"
+CONF_MIN_SECONDS_BETWEEN_REPEATS = "min_seconds_between_repeats"
+
+# Configuration schema with all required parameters
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(B48DisplayController),
-}).extend(cv.COMPONENT_SCHEMA) # Rozšiřuje základní schéma komponenty
+    cv.Required(CONF_UART_ID): cv.use_id(uart.UARTComponent),
+    cv.Required(CONF_DATABASE_PATH): cv.string,
+    cv.Optional(CONF_TRANSITION_DURATION, default=4): cv.positive_int,
+    cv.Optional(CONF_TIME_SYNC_INTERVAL, default=60): cv.positive_int,
+    cv.Optional(CONF_EMERGENCY_PRIORITY_THRESHOLD, default=95): cv.int_range(min=0, max=100),
+    cv.Optional(CONF_MIN_SECONDS_BETWEEN_REPEATS, default=30): cv.positive_int,
+}).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
-    # Tato funkce generuje C++ kód pro komponentu
-    var = cg.new_Pvariable(config[CONF_ID]) # Vytvoří globální C++ proměnnou pro komponentu
-    await cg.register_component(var, config) # Zaregistruje komponentu v ESPHome
+    # This function generates C++ code for the component
+    var = cg.new_Pvariable(config[CONF_ID])
+    await cg.register_component(var, config)
+    
+    # Get the UART device reference
+    uart = await cg.get_variable(config[CONF_UART_ID])
+    cg.add(var.set_uart(uart))
+    
+    # Set configuration values
+    cg.add(var.set_database_path(config[CONF_DATABASE_PATH]))
+    cg.add(var.set_transition_duration(config[CONF_TRANSITION_DURATION]))
+    cg.add(var.set_time_sync_interval(config[CONF_TIME_SYNC_INTERVAL]))
+    cg.add(var.set_emergency_priority_threshold(config[CONF_EMERGENCY_PRIORITY_THRESHOLD]))
+    cg.add(var.set_min_seconds_between_repeats(config[CONF_MIN_SECONDS_BETWEEN_REPEATS]))
 
-    # Zde později přidáš kód pro inicializaci a logiku komponenty
-    # např. cg.add(var.set_some_value(config[CONF_SOME_VALUE]))
-    # např. await cg.register_uart_device(var, config) pokud by používala UART
+    cg.add_library(
+        name="Sqlite3Esp32",
+        repository="https://github.com/siara-cc/esp32_arduino_sqlite3_lib.git",
+        version="2.5.0",
+    )
+
+    cg.add_library(
+        name="AUnit",
+        repository="https://github.com/bxparks/AUnit",
+        version="1.7.1",
+    )
