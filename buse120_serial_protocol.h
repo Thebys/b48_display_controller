@@ -74,6 +74,11 @@ class BUSE120SerialProtocol {
    */
   void switch_to_cycle(int cycle);
   
+  /**
+   * @brief Send invert command to toggle display inversion
+   */
+  void send_invert_command();
+  
  private:
   /**
    * @brief Calculate the checksum for a payload

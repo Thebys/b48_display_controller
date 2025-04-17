@@ -25,8 +25,8 @@ bool BUSE120SerialProtocol::send_command(const std::string &payload) {
     snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(c));
     debug_bytes += hex;
   }
-  ESP_LOGD(TAG, "Command bytes: %s", debug_bytes.c_str());
-  ESP_LOGD(TAG, "Terminator: 0D, Checksum: %02X", checksum);
+  //ESP_LOGD(TAG, "Command bytes: %s", debug_bytes.c_str());
+  //ESP_LOGD(TAG, "Terminator: 0D, Checksum: %02X", checksum);
 
   // Send payload
   this->uart_->write_array(reinterpret_cast<const uint8_t *>(payload.c_str()), payload.length());
@@ -53,7 +53,11 @@ uint8_t BUSE120SerialProtocol::calculate_checksum(const std::string &payload) {
 
   return checksum;
 }
-
+void BUSE120SerialProtocol::send_invert_command() {
+  char payload[2];
+  snprintf(payload, sizeof(payload), "i"); //not tested to be working. Also try b for blinking.
+  send_command(payload);
+}
 void BUSE120SerialProtocol::send_line_number(int line) {
   char payload[5];
   snprintf(payload, sizeof(payload), "l%03d", line);
@@ -62,7 +66,7 @@ void BUSE120SerialProtocol::send_line_number(int line) {
 
 void BUSE120SerialProtocol::send_tarif_zone(int zone) {
   char payload[9];
-  snprintf(payload, sizeof(payload), "e%06ld", static_cast<long>(zone));
+  snprintf(payload, sizeof(payload), "e%03d000", zone);
   send_command(payload);
 }
 

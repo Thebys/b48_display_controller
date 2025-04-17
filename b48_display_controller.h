@@ -97,6 +97,7 @@ class B48DisplayController : public Component {
   void send_scrolling_message(const std::string &text);
   void send_next_message_hint(const std::string &text);
   void send_time_update();
+  void send_invert_command();
   void switch_to_cycle(int cycle);
   void send_commands_for_message(const std::shared_ptr<MessageEntry> &msg);
   

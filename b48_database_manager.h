@@ -24,6 +24,17 @@ struct MessageEntry {
   std::string static_intro;   // Static intro text (zI command)
   std::string scrolling_message; // Main scrolling message (zM command)
   std::string next_message_hint; // Next stop hint (v command)
+  
+  // Default constructor needed for std::make_shared<MessageEntry>()
+  MessageEntry() = default;
+  
+  // Constructor for creating simple messages (used for loading/fallback messages)
+  MessageEntry(int message_id, int line_number, int tarif_zone, 
+               const std::string &static_intro, const std::string &scrolling_message,
+               const std::string &next_message_hint, int priority = 50, bool is_ephemeral = false)
+      : is_ephemeral(is_ephemeral), message_id(message_id), priority(priority),
+        line_number(line_number), tarif_zone(tarif_zone), static_intro(static_intro),
+        scrolling_message(scrolling_message), next_message_hint(next_message_hint) {}
 };
 
 class B48DatabaseManager {

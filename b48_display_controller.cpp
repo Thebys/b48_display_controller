@@ -26,6 +26,7 @@ void B48DisplayController::setup() {
   // Configure and enable the display enable pin if specified
   // This is only needed for test boards - production hardware should
   // have the display enable handled externally
+  // Specifically once proper connector is used, this will be removed
   if (this->display_enable_pin_ >= 0) {
     ESP_LOGCONFIG(TAG, "  Configuring display enable pin: %d", this->display_enable_pin_);
     pinMode(this->display_enable_pin_, OUTPUT);
@@ -73,6 +74,16 @@ void B48DisplayController::setup() {
   if (this->run_tests_on_startup_) {
     this->runSelfTests();
   }
+  // Display loading message
+  auto loading_msg = std::make_shared<MessageEntry>();
+  loading_msg->message_id = -1;
+  loading_msg->line_number = 48;
+  loading_msg->tarif_zone = 101;
+  loading_msg->static_intro = "Loading";
+  loading_msg->scrolling_message = "System initialization in progress...";
+  loading_msg->next_message_hint = "Please wait";
+  loading_msg->priority = 75;
+  send_commands_for_message(loading_msg);
 
   // Load messages from the database
   if (!refresh_message_cache()) {
@@ -442,6 +453,7 @@ void B48DisplayController::send_commands_for_message(const std::shared_ptr<Messa
   send_tarif_zone(msg->tarif_zone);
   send_static_intro(msg->static_intro);
   send_scrolling_message(msg->scrolling_message);
+  send_next_message_hint(msg->next_message_hint);
 }
 
 // Display state machine methods

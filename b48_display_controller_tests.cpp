@@ -285,15 +285,25 @@ bool B48DisplayController::testSerialProtocol() {
         
         // Test time update command
         ESP_LOGD(TAG, "Serial Protocol: Testing time update command");
-        this->serial_protocol_.send_time_update(timeinfo->tm_hour, timeinfo->tm_min);
-        
+        this->serial_protocol_.send_time_update(01, 23);
         // Test line number command
         ESP_LOGD(TAG, "Serial Protocol: Testing line number command");
-        this->serial_protocol_.send_line_number(123);
-        
+        this->serial_protocol_.send_line_number(48);
+        // Test tarif zone command
+        ESP_LOGD(TAG, "Serial Protocol: Testing tarif zone command");
+        this->serial_protocol_.send_tarif_zone(101);
+        // test Intro message command
+        ESP_LOGD(TAG, "Serial Protocol: Testing emergency message command");
+        this->serial_protocol_.send_static_intro("Selftest");
+        // Set Scroll message
+        ESP_LOGD(TAG, "Serial Protocol: Testing scroll message command");
+        this->serial_protocol_.send_scrolling_message("Scrolling longer text message...   ");
         // Test cycle switch command
         ESP_LOGD(TAG, "Serial Protocol: Testing cycle switch command");
         this->serial_protocol_.switch_to_cycle(0);
+        // Test invert command
+        ESP_LOGD(TAG, "Serial Protocol: Testing invert command");
+        this->serial_protocol_.send_invert_command();
         
         ESP_LOGD(TAG, "Serial Protocol test PASSED.");
         return true;
