@@ -266,24 +266,24 @@ bool B48DisplayController::add_ephemeral_message(int priority, int line_number, 
                                                  int ttl_seconds) {
   std::lock_guard<std::mutex> lock(this->message_mutex_);
 
-  auto entry = std::make_shared<MessageEntry>();
-  entry->is_ephemeral = true;
-  entry->message_id = -1;  // Indicates ephemeral
-  entry->priority = priority;
-  entry->line_number = line_number;
-  entry->tarif_zone = tarif_zone;
-  entry->static_intro = static_intro;
-  entry->scrolling_message = scrolling_message;
-  entry->next_message_hint = next_message_hint;
-  entry->remaining_displays = display_count;
-  entry->last_display_time = 0;  // Never displayed yet
+  auto msg = std::make_shared<MessageEntry>();
+  msg->is_ephemeral = true;
+  msg->message_id = -1;  // Indicates ephemeral
+  msg->priority = priority;
+  msg->line_number = line_number;
+  msg->tarif_zone = tarif_zone;
+  msg->static_intro = static_intro;
+  msg->scrolling_message = scrolling_message;
+  msg->next_message_hint = next_message_hint;
+  msg->remaining_displays = display_count;
+  msg->last_display_time = 0;  // Never displayed yet
 
   // Set expiry time if TTL is specified
   if (ttl_seconds > 0) {
-    entry->expiry_time = time(nullptr) + ttl_seconds;
+    msg->expiry_time = time(nullptr) + ttl_seconds;
   }
 
-  this->ephemeral_messages_.push_back(entry);
+  this->ephemeral_messages_.push_back(msg);
   ESP_LOGI(TAG, "Added ephemeral message with priority %d", priority);
 
   return true;
@@ -375,23 +375,23 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 }
 
 int B48DisplayController::calculate_display_duration(const std::shared_ptr<MessageEntry> &msg) {
-  if (!msg)
-    return 20;  // Default duration if no message
+  if (!msg) {
+    return 20; // Default duration if message is null
+  }
+  // Base duration + time per character
+  // From spec: 20.0 + (0.3 * length(scrolling_message))
+  int duration = 20 + static_cast<int>(msg->scrolling_message.length() * 0.3f);
 
-  // Formula: 20.0 + (0.3 * length(scrolling_message)) in seconds
-  int duration = 20 + static_cast<int>(0.3f * msg->scrolling_message.length());
-
-  // Cap at maximum duration of 180 seconds
-  return std::min(duration, 180);
+  // Clamp duration between min (e.g., 20s) and max (e.g., 180s)
+  return std::max(20, std::min(duration, 180)); 
 }
 
 void B48DisplayController::update_message_display_stats(const std::shared_ptr<MessageEntry> &msg) {
-  if (!msg)
+  if (!msg) {
     return;
-
+  }
   std::lock_guard<std::mutex> lock(this->message_mutex_);
 
-  // Update last display time
   msg->last_display_time = time(nullptr);
 
   // For ephemeral messages, decrement remaining displays
