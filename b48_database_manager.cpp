@@ -192,6 +192,38 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
                                                 const std::string &source_info) {
   yield();  // Allow watchdog to reset before operation starts
 
+  // First check if a similar message already exists to avoid duplicates
+  const char *check_query = R"SQL(
+    SELECT COUNT(*) FROM messages
+    WHERE 
+      is_enabled = 1 AND
+      line_number = ? AND
+      tarif_zone = ? AND
+      static_intro = ? AND
+      scrolling_message = ? AND
+      (datetime_added + ?) > strftime('%s', 'now')
+  )SQL";
+
+  sqlite3_stmt *check_stmt;
+  int rc = sqlite3_prepare_v2(this->db_, check_query, -1, &check_stmt, nullptr);
+  if (rc == SQLITE_OK) {
+    sqlite3_bind_int(check_stmt, 1, line_number);
+    sqlite3_bind_int(check_stmt, 2, tarif_zone);
+    sqlite3_bind_text(check_stmt, 3, static_intro.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(check_stmt, 4, scrolling_message.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(check_stmt, 5, duration_seconds > 0 ? duration_seconds : 86400); // Use 24h if no duration
+    
+    if (sqlite3_step(check_stmt) == SQLITE_ROW) {
+      int count = sqlite3_column_int(check_stmt, 0);
+      if (count > 0) {
+        ESP_LOGW(TAG, "Similar message already exists in database, skipping duplicate.");
+        sqlite3_finalize(check_stmt);
+        return false;
+      }
+    }
+    sqlite3_finalize(check_stmt);
+  }
+
   const char *query = R"SQL(
     INSERT INTO messages (
       priority, line_number, tarif_zone, static_intro, scrolling_message, 
@@ -200,7 +232,7 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
   )SQL";
 
   sqlite3_stmt *stmt;
-  int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
+  rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     ESP_LOGE(TAG, "Failed to prepare statement: %s", sqlite3_errmsg(this->db_));
     return false;
@@ -526,7 +558,17 @@ int B48DatabaseManager::get_message_count() {
   }
 
   sqlite3_stmt *stmt;
-  const char *query = "SELECT COUNT(*) FROM messages;";
+  // Change query to only count active, non-expired messages
+  const char *query = R"SQL(
+    SELECT COUNT(*) FROM messages
+    WHERE
+      is_enabled = 1
+      AND (
+        duration_seconds IS NULL
+        OR (datetime_added + duration_seconds) > strftime('%s', 'now')
+      );
+  )SQL";
+  
   int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
 
   if (rc != SQLITE_OK) {
@@ -544,7 +586,7 @@ int B48DatabaseManager::get_message_count() {
   sqlite3_finalize(stmt); // Finalize the statement
   
   if (count != -1) {
-      ESP_LOGD(TAG, "Total message count: %d", count);
+      ESP_LOGD(TAG, "Active message count: %d", count);
   }
   return count;
 }

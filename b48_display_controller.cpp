@@ -31,6 +31,10 @@ B48DisplayController::~B48DisplayController() {
 
 // --- HA Entity Setters ---
 void B48DisplayController::set_message_queue_size_sensor(sensor::Sensor *sensor) {
+  // Store the sensor regardless of whether HA integration exists yet
+  this->message_queue_size_sensor_ = sensor;
+  
+  // If HA integration exists, pass the sensor to it
   if (this->ha_integration_) {
     this->ha_integration_->set_message_queue_size_sensor(sensor);
   }
@@ -38,6 +42,19 @@ void B48DisplayController::set_message_queue_size_sensor(sensor::Sensor *sensor)
 
 void B48DisplayController::setup() {
   ESP_LOGCONFIG(TAG, "Setting up B48 Display Controller");
+
+  // Initialize HA integration if it hasn't been already
+  if (!this->ha_integration_) {
+    ESP_LOGD(TAG, "Creating HA integration instance");
+    this->ha_integration_.reset(new B48HAIntegration());
+    this->ha_integration_->set_parent(this);
+    
+    // Pass the stored sensor to the HA integration
+    if (this->message_queue_size_sensor_) {
+      ESP_LOGD(TAG, "Passing message queue size sensor to HA integration");
+      this->ha_integration_->set_message_queue_size_sensor(this->message_queue_size_sensor_);
+    }
+  }
 
   // Configure and enable the display enable pin if specified
   // This is only needed for test boards - production hardware should
@@ -199,6 +216,8 @@ bool B48DisplayController::add_persistent_message(int priority, int line_number,
     return false;
   }
 
+  ESP_LOGD(TAG, "Adding persistent message with priority %d: %s", priority, scrolling_message.substr(0, 30).c_str());
+
   // Call the database manager to add the message
   bool success = this->db_manager_->add_persistent_message(
     priority, line_number, tarif_zone, static_intro, scrolling_message,
@@ -206,13 +225,17 @@ bool B48DisplayController::add_persistent_message(int priority, int line_number,
   );
 
   if (success) {
+    ESP_LOGI(TAG, "Successfully added message to database. Refreshing cache.");
     // Refresh cache and update HA sensor
     if (refresh_message_cache()) {
+        ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
         update_ha_queue_size();
     } else {
         ESP_LOGE(TAG, "Failed to refresh message cache after adding persistent message.");
         // Message added to DB, but cache might be stale. Continue anyway.
     }
+  } else {
+    ESP_LOGE(TAG, "Failed to add message to database.");
   }
 
   return success;
@@ -242,19 +265,8 @@ bool B48DisplayController::clear_all_persistent_messages() {
         ESP_LOGE(TAG, "Database manager is not initialized for clear_all_persistent_messages");
         return false;
     }
-    // Call DB manager to clear messages (assuming it has a method, or implement it)
-    // For now, let's assume B48DatabaseManager needs a clear_all_messages method
-    // bool success = this->db_manager_->clear_all_messages();
-
-    // --- Temporary implementation using wipe + reinit --- 
-    // WARNING: This is inefficient and will remove schema if not careful!
-    // Proper implementation requires a specific clear method in db_manager_
-    ESP_LOGW(TAG, "clear_all_persistent_messages: Using WIPE + REINIT (inefficient)");
-    bool success = this->db_manager_->wipe_database();
-    if (success) {
-        success = this->db_manager_->initialize(); // Recreate schema
-    }
-    // --- End Temporary --- 
+    // Call DB manager to clear messages
+    bool success = this->db_manager_->clear_all_messages();
 
     if (success) {
         ESP_LOGI(TAG, "Cleared all persistent messages.");

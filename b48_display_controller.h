@@ -170,8 +170,11 @@ class B48DisplayController : public Component {
   // HA Integration Layer instance
   std::unique_ptr<B48HAIntegration> ha_integration_{nullptr};
 
+  // Stored sensor for HA integration
+  sensor::Sensor *message_queue_size_sensor_{nullptr};
+
   // Tracking last display times for messages
-  std::map<int, time_t> last_display_times_; 
+  std::map<int, time_t> last_display_times_;
 };
 
 }  // namespace b48_display_controller

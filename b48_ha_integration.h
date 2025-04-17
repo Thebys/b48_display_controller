@@ -14,7 +14,14 @@ class B48DisplayController;
 
 class B48HAIntegration : public Component, public api::CustomAPIDevice {
  public:
+  // Default constructor
+  B48HAIntegration() = default;
+
+  // Constructor with parent
   explicit B48HAIntegration(B48DisplayController *parent) : parent_(parent) {}
+
+  // Setter for parent
+  void set_parent(B48DisplayController *parent) { this->parent_ = parent; }
 
   void setup() override;
   void dump_config() override;
