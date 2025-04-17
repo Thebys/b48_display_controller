@@ -13,7 +13,7 @@
 namespace esphome {
 namespace b48_display_controller {
 
-static const char *const TAG = "b48_display_controller";
+static const char *const TAG = "b48c";
 static const char CR = 0x0D;  // Carriage Return for BUSE120 protocol
 
 void B48DisplayController::setup() {

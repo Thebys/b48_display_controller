@@ -6,7 +6,7 @@
 namespace esphome {
 namespace b48_display_controller {
 
-static const char *const TAG = "b48_display_controller.test"; // Separate tag for test logs
+static const char *const TAG = "b48c.test"; // Separate tag for test logs
 
 // Helper function to execute a single test safely
 bool B48DisplayController::executeTest(bool (B48DisplayController::*testMethod)(), const char* testName) {

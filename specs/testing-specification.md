@@ -28,42 +28,6 @@ The strategy involves running a set of internal self-test methods when the compo
 ### 3.1 Automatic Execution on Startup
 Tests are executed within the component's `setup()` or `loop()` methods if the `run_tests_on_startup` configuration flag is set to `true`.
 
-```cpp
-// Example conceptual placement in component code
-void B48DisplayController::setup() {
-  // ... regular setup ...
-  
-  // Run self-tests if enabled in YAML
-  if (this->run_tests_on_startup_) {
-    runSelfTests(); 
-  }
-  
-  // ... continue with normal operation ...
-}
-
-void B48DisplayController::runSelfTests() {
-  ESP_LOGI(TAG, "Running self-tests...");
-  bool success = true;
-
-  // Example test calls
-  if (!testDatabaseConnection()) {
-      ESP_LOGE(TAG, "Self-test failed: Database connection");
-      success = false;
-  }
-  if (!testUartCommunication()) {
-      ESP_LOGE(TAG, "Self-test failed: UART communication");
-      success = false;
-  }
-  
-  if (success) {
-      ESP_LOGI(TAG, "All self-tests passed.");
-  } else {
-      ESP_LOGW(TAG, "One or more self-tests failed. Check logs for details.");
-      // Optional: Enter a safe mode or halt further operations
-  }
-}
-```
-
 ### 3.2 Enabling Tests
 Enable self-testing via the ESPHome YAML configuration:
 
