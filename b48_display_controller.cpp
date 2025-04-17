@@ -23,12 +23,22 @@ B48DisplayController::~B48DisplayController() = default;
 void B48DisplayController::setup() {
   ESP_LOGCONFIG(TAG, "Setting up B48 Display Controller");
 
+  // Configure and enable the display enable pin if specified
+  // This is only needed for test boards - production hardware should
+  // have the display enable handled externally
+  if (this->display_enable_pin_ >= 0) {
+    ESP_LOGCONFIG(TAG, "  Configuring display enable pin: %d", this->display_enable_pin_);
+    pinMode(this->display_enable_pin_, OUTPUT);
+    digitalWrite(this->display_enable_pin_, HIGH);
+    ESP_LOGCONFIG(TAG, "  Display enable pin pulled HIGH");
+  }
+
   // Initialize LittleFS
   if (!LittleFS.begin()) {
     ESP_LOGW(TAG, "Initial mount of LittleFS failed, trying again...");
     delay(400);
-    //The following may probably depend on your board, memory AND PARTITIONS!
-    if (!LittleFS.begin(true, "/littlefs", 4, "spiffs")) {
+    // Try to initialize with different parameters
+    if (!LittleFS.begin(true)) {
       ESP_LOGE(TAG, "Failed to mount LittleFS, format attempted.");
       this->mark_failed();
       return;
@@ -59,25 +69,22 @@ void B48DisplayController::setup() {
     }
   }
 
-  // Load messages from the database
-  if (!refresh_message_cache()) {
-    ESP_LOGE(TAG, "Failed to load messages from the database");
-    // Non-fatal error, continue
-  }
-
-  // Initialize time tracking
-  this->current_time_ = time(nullptr);
-  this->last_time_sync_ = 0;
-  this->state_change_time_ = millis();
-
-  ESP_LOGI(TAG, "B48 Display Controller initialized successfully");
-
-  // Run self-tests if enabled
+  // Run self-tests if configured to do so
   if (this->run_tests_on_startup_) {
     this->runSelfTests();
-  } else {
-    ESP_LOGI(TAG, "Self-tests are disabled.");
   }
+
+  // Load messages from the database
+  if (!refresh_message_cache()) {
+    ESP_LOGE(TAG, "Failed to refresh message cache");
+    this->mark_failed();
+    return;
+  }
+
+  // Start with transition mode
+  this->state_ = TRANSITION_MODE;
+  this->state_change_time_ = millis();
+  ESP_LOGI(TAG, "B48 Display Controller setup complete");
 }
 
 void B48DisplayController::loop() {
@@ -396,53 +403,35 @@ void B48DisplayController::update_message_display_stats(const std::shared_ptr<Me
 // BUSE120 protocol methods
 
 void B48DisplayController::send_line_number(int line) {
-  char payload[5];
-  snprintf(payload, sizeof(payload), "l%03d", line);
-  send_serial_command(payload);
+  this->serial_protocol_.send_line_number(line);
 }
 
 void B48DisplayController::send_tarif_zone(int zone) {
-  char payload[9];
-  snprintf(payload, sizeof(payload), "e%06ld", static_cast<long>(zone));
-  send_serial_command(payload);
+  this->serial_protocol_.send_tarif_zone(zone);
 }
 
 void B48DisplayController::send_static_intro(const std::string &text) {
-  // Limit to 15 characters as per spec
-  std::string truncated = text.substr(0, 15);
-  std::string payload = "zI " + truncated;
-  send_serial_command(payload);
+  this->serial_protocol_.send_static_intro(text);
 }
 
 void B48DisplayController::send_scrolling_message(const std::string &text) {
-  // Limit to 511 characters as per spec
-  std::string truncated = text.substr(0, 511);
-  std::string payload = "zM " + truncated;
-  send_serial_command(payload);
+  this->serial_protocol_.send_scrolling_message(text);
 }
 
 void B48DisplayController::send_next_message_hint(const std::string &text) {
-  // Limit to 15 characters as per spec
-  std::string truncated = text.substr(0, 15);
-  std::string payload = "v " + truncated;
-  send_serial_command(payload);
+  this->serial_protocol_.send_next_message_hint(text);
 }
 
 void B48DisplayController::send_time_update() {
   time_t now = time(nullptr);
   struct tm *timeinfo = localtime(&now);
-
-  char payload[6];
-  snprintf(payload, sizeof(payload), "u%02d%02d", timeinfo->tm_hour, timeinfo->tm_min);
-  send_serial_command(payload);
-
+  
+  this->serial_protocol_.send_time_update(timeinfo->tm_hour, timeinfo->tm_min);
   this->last_time_sync_ = millis();
 }
 
 void B48DisplayController::switch_to_cycle(int cycle) {
-  char payload[4];
-  snprintf(payload, sizeof(payload), "xC%d", cycle);
-  send_serial_command(payload);
+  this->serial_protocol_.switch_to_cycle(cycle);
 }
 
 void B48DisplayController::send_commands_for_message(const std::shared_ptr<MessageEntry> &msg) {
@@ -453,41 +442,6 @@ void B48DisplayController::send_commands_for_message(const std::shared_ptr<Messa
   send_tarif_zone(msg->tarif_zone);
   send_static_intro(msg->static_intro);
   send_scrolling_message(msg->scrolling_message);
-}
-
-void B48DisplayController::send_serial_command(const std::string &payload) {
-  if (!this->uart_) {
-    ESP_LOGE(TAG, "UART not initialized");
-    return;
-  }
-
-  uint8_t checksum = calculate_checksum(payload);
-
-  // Log the command (without checksum for readability)
-  ESP_LOGD(TAG, "Sending command: %s", payload.c_str());
-
-  // Send payload
-  this->uart_->write_array(reinterpret_cast<const uint8_t *>(payload.c_str()), payload.length());
-
-  // Send terminator (CR)
-  this->uart_->write_byte(CR);
-
-  // Send checksum
-  this->uart_->write_byte(checksum);
-}
-
-uint8_t B48DisplayController::calculate_checksum(const std::string &payload) {
-  uint8_t checksum = 0x7F;
-
-  // XOR with each byte in the payload
-  for (char c : payload) {
-    checksum ^= static_cast<uint8_t>(c);
-  }
-
-  // XOR with the terminator (CR)
-  checksum ^= CR;
-
-  return checksum;
 }
 
 // Display state machine methods

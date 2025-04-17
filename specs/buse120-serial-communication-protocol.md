@@ -6,7 +6,7 @@ alwaysApply: false
 # Base48 BUSE120 Display Serial Protocol Specification
 **File:** `buse120.serialspec`
 **Date:** April 13, 2025
-**Version:** 1.0
+**Version:** 1.1
 ## Overview
 This document specifies the serial communication protocol for controlling BUSE120 tram/bus display. It is based on common implementations and reverse-engineered logic. This protocol is used to send commands from a controller (e.g., ESP32) to the display unit.
 ## 1. Communication Parameters
@@ -18,6 +18,24 @@ This document specifies the serial communication protocol for controlling BUSE12
 *   **Flow Control:** None
 *   **Encoding:** ASCII for payload content.
 *(Note: These parameters must be correctly configured in the sending device's UART settings, for example, within ESPHome's `uart:` component configuration.)*
+
+## 1.1. Testing Hardware Requirements
+When testing with development hardware, some display units may require an additional enable signal:
+
+* **Display Enable Pin:** Some test/development display units require a GPIO pin to be pulled HIGH to activate the display hardware. This is typically not required in production hardware where the power and enable circuits are properly implemented.
+
+To configure this for testing in ESPHome, add the `display_enable_pin` parameter to your configuration:
+
+```yaml
+b48_display_controller:
+  uart_id: uart_bus
+  database_path: "/littlefs/messages.db"
+  # ... other configuration options ...
+  display_enable_pin: 18  # GPIO pin to enable the display (testing only)
+```
+
+The enable pin will be configured as OUTPUT and pulled HIGH during component initialization.
+
 ## 2. Message Structure
 All commands sent to the display follow a consistent byte sequence:
 1.  **Payload:** A sequence of ASCII characters defining the command and its parameters. Specific formats are detailed under "Supported Commands".
@@ -34,6 +52,18 @@ The checksum is an 8-bit XOR sum, calculated as follows:
 3.  XOR the checksum with the **Terminator** byte (CR):
 *   `checksum = checksum XOR 0x0D`
 4.  The final value of the `checksum` variable is the Checksum byte transmitted.
+
+### Example Commands with HEX and Binary Representation
+The following table shows examples of commands with their binary and hexadecimal representations:
+
+| Command | HEX           | Meaning         | Binary                                                    |
+|---------|---------------|-----------------|-----------------------------------------------------------|
+| xC0     | 78 43 30 0D 79| povel,CR,KS     | 01111000 01000011 00110000 00001101 01111001             |
+| xC1     | 78 43 31 0D 78| povel,CR,KS     | 01111000 01000011 00110001 00001101 01111000             |
+| u2019   | 75 32 30 31 39 0D 0D | povel,CR,KS | 01110101 00110010 00110000 00110001 00111001 00001101 00001101 |
+| u2020   | 75 32 30 32 30 0D 07 | povel,CR,KS | 01110101 00110010 00110000 00110010 00110000 00001101 00000111 |
+| u2021   | 75 32 30 32 31 0D 06 | povel,CR,KS | 01110101 00110010 00110000 00110010 00110001 00001101 00000110 |
+
 ## 3. Supported Commands
 The following commands are supported. Payloads are represented using `printf`-style formatting where applicable. `<space>` indicates a literal ASCII space character (`0x20`).
 ### Set Line Number

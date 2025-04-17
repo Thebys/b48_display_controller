@@ -15,6 +15,7 @@
 #include <LittleFS.h>
 // Include the full header instead of forward declaration
 #include "b48_database_manager.h"
+#include "buse120_serial_protocol.h"
 
 namespace esphome {
 namespace b48_display_controller {
@@ -40,7 +41,7 @@ class B48DisplayController : public Component {
   float get_setup_priority() const override { return esphome::setup_priority::LATE; }
 
   // Configuration setters
-  void set_uart(uart::UARTComponent *uart) { this->uart_ = uart; }
+  void set_uart(uart::UARTComponent *uart) { this->uart_ = uart; this->serial_protocol_.set_uart(uart); }
   void set_database_path(const std::string &path) { this->database_path_ = path; }
   void set_transition_duration(int duration) { this->transition_duration_ = duration; }
   void set_time_sync_interval(int interval) { this->time_sync_interval_ = interval; }
@@ -48,6 +49,17 @@ class B48DisplayController : public Component {
   void set_min_seconds_between_repeats(int seconds) { this->min_seconds_between_repeats_ = seconds; }
   void set_run_tests_on_startup(bool run_tests) { this->run_tests_on_startup_ = run_tests; }
   void set_wipe_database_on_boot(bool wipe) { this->wipe_database_on_boot_ = wipe; }
+  
+  /**
+   * @brief Set a pin to be pulled high during setup to enable the display (testing only)
+   * 
+   * This is only needed for testing setups where an additional enable pin needs 
+   * to be pulled high to activate the display. In production hardware, this should
+   * be handled externally.
+   * 
+   * @param pin GPIO pin number to pull high
+   */
+  void set_display_enable_pin(int pin) { this->display_enable_pin_ = pin; }
   
   // Message management
   bool add_persistent_message(int priority, int line_number, int tarif_zone, 
@@ -78,7 +90,7 @@ class B48DisplayController : public Component {
   int calculate_display_duration(const std::shared_ptr<MessageEntry> &msg);
   void update_message_display_stats(const std::shared_ptr<MessageEntry> &msg);
   
-  // BUSE120 protocol methods
+  // BUSE120 protocol methods - now delegated to the serial_protocol_ object
   void send_line_number(int line);
   void send_tarif_zone(int zone);
   void send_static_intro(const std::string &text);
@@ -87,8 +99,6 @@ class B48DisplayController : public Component {
   void send_time_update();
   void switch_to_cycle(int cycle);
   void send_commands_for_message(const std::shared_ptr<MessageEntry> &msg);
-  void send_serial_command(const std::string &payload);
-  uint8_t calculate_checksum(const std::string &payload);
   
   // Display state machine methods
   void run_transition_mode();
@@ -101,6 +111,7 @@ class B48DisplayController : public Component {
   void runSelfTests();
   bool testLittleFSMount();
   bool testSqliteBasicOperations();
+  bool testSerialProtocol();
   
   // Add new test declarations above here
 
@@ -116,6 +127,12 @@ class B48DisplayController : public Component {
   int min_seconds_between_repeats_{30};
   bool run_tests_on_startup_{false};
   bool wipe_database_on_boot_{false};
+  
+  // Pin configuration for testing
+  int display_enable_pin_{-1};  // Default to -1 (disabled)
+  
+  // Serial protocol handler
+  BUSE120SerialProtocol serial_protocol_{};
   
   // Database manager
   std::unique_ptr<B48DatabaseManager> db_manager_{nullptr};

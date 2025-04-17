@@ -1,6 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_UART_ID
+from esphome.const import CONF_ID, CONF_UART_ID, CONF_PIN
 from esphome.components import uart
 
 # Define namespace for this component
@@ -16,6 +16,7 @@ CONF_EMERGENCY_PRIORITY_THRESHOLD = "emergency_priority_threshold"
 CONF_MIN_SECONDS_BETWEEN_REPEATS = "min_seconds_between_repeats"
 CONF_RUN_TESTS_ON_STARTUP = "run_tests_on_startup"
 CONF_WIPE_DATABASE_ON_BOOT = "wipe_database_on_boot"
+CONF_DISPLAY_ENABLE_PIN = "display_enable_pin"  # New testing-only configuration
 
 # Configuration schema with all required parameters
 CONFIG_SCHEMA = cv.Schema({
@@ -28,6 +29,8 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_MIN_SECONDS_BETWEEN_REPEATS, default=30): cv.positive_int,
     cv.Optional(CONF_RUN_TESTS_ON_STARTUP, default=False): cv.boolean,
     cv.Optional(CONF_WIPE_DATABASE_ON_BOOT, default=False): cv.boolean,
+    # New option for testing purposes - pulls a pin high to enable the display
+    cv.Optional(CONF_DISPLAY_ENABLE_PIN): cv.int_range(min=0, max=39),
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
@@ -47,6 +50,10 @@ async def to_code(config):
     cg.add(var.set_min_seconds_between_repeats(config[CONF_MIN_SECONDS_BETWEEN_REPEATS]))
     cg.add(var.set_run_tests_on_startup(config[CONF_RUN_TESTS_ON_STARTUP]))
     cg.add(var.set_wipe_database_on_boot(config[CONF_WIPE_DATABASE_ON_BOOT]))
+    
+    # Configure display enable pin for testing if specified
+    if CONF_DISPLAY_ENABLE_PIN in config:
+        cg.add(var.set_display_enable_pin(config[CONF_DISPLAY_ENABLE_PIN]))
 
     cg.add_library(
         name="Sqlite3Esp32",

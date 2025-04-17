@@ -85,6 +85,13 @@ void B48DisplayController::runSelfTests() {
     } else {
         fail_count++;
     }
+    
+    // Add the Serial Protocol test
+    if (executeTest(&B48DisplayController::testSerialProtocol, "testSerialProtocol")) {
+        pass_count++;
+    } else {
+        fail_count++;
+    }
 
     // --- Test Summary ---
     ESP_LOGI(TAG, "--- Self-Test Summary --- Passed: %d, Failed: %d ---", pass_count, fail_count);
@@ -257,6 +264,46 @@ bool B48DisplayController::testSqliteBasicOperations() {
     ESP_LOGD(TAG, "SQLite Test: Library shutdown.");
 
     return success;
+}
+
+// Test for the serial protocol implementation
+bool B48DisplayController::testSerialProtocol() {
+    ESP_LOGD(TAG, "Starting Serial Protocol test...");
+    
+    if (!this->uart_) {
+        ESP_LOGE(TAG, "[TEST][FAIL] Serial Protocol: UART not initialized for test");
+        return false;
+    }
+    
+    // Log the start of the test
+    ESP_LOGD(TAG, "Serial Protocol: Testing BUSE120 protocol commands");
+    
+    try {
+        // Send time update as a test command
+        time_t now = time(nullptr);
+        struct tm *timeinfo = localtime(&now);
+        
+        // Test time update command
+        ESP_LOGD(TAG, "Serial Protocol: Testing time update command");
+        this->serial_protocol_.send_time_update(timeinfo->tm_hour, timeinfo->tm_min);
+        
+        // Test line number command
+        ESP_LOGD(TAG, "Serial Protocol: Testing line number command");
+        this->serial_protocol_.send_line_number(123);
+        
+        // Test cycle switch command
+        ESP_LOGD(TAG, "Serial Protocol: Testing cycle switch command");
+        this->serial_protocol_.switch_to_cycle(0);
+        
+        ESP_LOGD(TAG, "Serial Protocol test PASSED.");
+        return true;
+    } catch (const std::exception& e) {
+        ESP_LOGE(TAG, "[TEST][FAIL] Serial Protocol: Exception during test: %s", e.what());
+        return false;
+    } catch (...) {
+        ESP_LOGE(TAG, "[TEST][FAIL] Serial Protocol: Unknown exception during test");
+        return false;
+    }
 }
 
 // --- Add implementations for other test methods here ---
