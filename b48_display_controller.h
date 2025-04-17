@@ -13,24 +13,14 @@
 #include <sqlite3.h>
 #include <Arduino.h>
 #include <LittleFS.h>
+// Include the full header instead of forward declaration
+#include "b48_database_manager.h"
 
 namespace esphome {
 namespace b48_display_controller {
 
-// Message entry structure as per specs
-struct MessageEntry {
-  bool is_ephemeral = false;
-  int message_id = -1;         // -1 for ephemeral
-  int priority = 50;           // 0-100
-  time_t expiry_time = 0;      // When this message expires
-  time_t last_display_time = 0; // Timestamp when message was last displayed
-  int remaining_displays = 0;  // For ephemeral messages
-  int line_number = 0;        // Line number to display
-  int tarif_zone = 0;         // Tariff zone to display
-  std::string static_intro;   // Static intro text (zI command)
-  std::string scrolling_message; // Main scrolling message (zM command)
-  std::string next_message_hint; // Next stop hint (v command)
-};
+// Message entry structure is now defined in b48_database_manager.h
+// Don't redefine it here
 
 // Display state enum
 enum DisplayState {
@@ -41,6 +31,9 @@ enum DisplayState {
 
 class B48DisplayController : public Component {
  public:
+  B48DisplayController() = default;
+  ~B48DisplayController();
+
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -54,6 +47,7 @@ class B48DisplayController : public Component {
   void set_emergency_priority_threshold(int threshold) { this->emergency_priority_threshold_ = threshold; }
   void set_min_seconds_between_repeats(int seconds) { this->min_seconds_between_repeats_ = seconds; }
   void set_run_tests_on_startup(bool run_tests) { this->run_tests_on_startup_ = run_tests; }
+  void set_wipe_database_on_boot(bool wipe) { this->wipe_database_on_boot_ = wipe; }
   
   // Message management
   bool add_persistent_message(int priority, int line_number, int tarif_zone, 
@@ -106,6 +100,7 @@ class B48DisplayController : public Component {
   // Self-test methods
   void runSelfTests();
   bool testLittleFSMount();
+  bool testSqliteBasicOperations();
   
   // Add new test declarations above here
 
@@ -119,9 +114,11 @@ class B48DisplayController : public Component {
   int time_sync_interval_{60};
   int emergency_priority_threshold_{95};
   int min_seconds_between_repeats_{30};
-  bool run_tests_on_startup_{false}; // Default to false
+  bool run_tests_on_startup_{false};
+  bool wipe_database_on_boot_{false};
   
-  sqlite3 *db_{nullptr};
+  // Database manager
+  std::unique_ptr<B48DatabaseManager> db_manager_{nullptr};
   
   // Message cache
   std::vector<std::shared_ptr<MessageEntry>> persistent_messages_;

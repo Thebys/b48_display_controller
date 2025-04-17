@@ -1,4 +1,5 @@
 #include "b48_display_controller.h"
+#include "b48_database_manager.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 #include <sstream>
@@ -16,6 +17,9 @@ namespace b48_display_controller {
 static const char *const TAG = "b48c";
 static const char CR = 0x0D;  // Carriage Return for BUSE120 protocol
 
+// Add destructor implementation - this needs to be after including b48_database_manager.h
+B48DisplayController::~B48DisplayController() = default;
+
 void B48DisplayController::setup() {
   ESP_LOGCONFIG(TAG, "Setting up B48 Display Controller");
 
@@ -31,18 +35,34 @@ void B48DisplayController::setup() {
     }
   }
 
-  // Initialize the database
-  if (!init_database()) {
-    ESP_LOGE(TAG, "Failed to initialize the database");
-    // this->mark_failed();
-    // return;
+  // Initialize the database manager
+  db_manager_.reset(new B48DatabaseManager(this->database_path_));
+  if (!db_manager_->initialize()) {
+    ESP_LOGE(TAG, "Failed to initialize the database manager");
+    this->mark_failed();
+    return;
+  }
+
+  // Wipe the database if configured to do so
+  if (this->wipe_database_on_boot_) {
+    ESP_LOGW(TAG, "Configuration has wipe_database_on_boot enabled. Wiping database...");
+    if (!db_manager_->wipe_database()) {
+      ESP_LOGE(TAG, "Failed to wipe database");
+      // Not a fatal error, continue
+    } else {
+      // Need to recreate schema and bootstrap after wiping
+      if (!db_manager_->initialize()) {
+        ESP_LOGE(TAG, "Failed to reinitialize database after wiping");
+        this->mark_failed();
+        return;
+      }
+    }
   }
 
   // Load messages from the database
   if (!refresh_message_cache()) {
     ESP_LOGE(TAG, "Failed to load messages from the database");
-    // this->mark_failed();
-    // return;
+    // Non-fatal error, continue
   }
 
   // Initialize time tracking
@@ -102,78 +122,9 @@ void B48DisplayController::dump_config() {
   ESP_LOGCONFIG(TAG, "  Ephemeral Messages: %d", this->ephemeral_messages_.size());
 }
 
-// Database Methods
+// Database Methods - Keep only what is needed in Controller
 
-bool B48DisplayController::init_database() {
-  int rc = sqlite3_open(this->database_path_.c_str(), &this->db_);
-  if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "Cannot open database: %s", sqlite3_errmsg(this->db_));
-    sqlite3_close(this->db_);
-    return false;
-  }
-
-  // Get the database version
-  int user_version = 0;
-  char *err_msg = nullptr;
-  const char *query = "PRAGMA user_version;";
-
-  auto callback = [](void *data, int argc, char **argv, char **azColName) -> int {
-    int *version = static_cast<int *>(data);
-    if (argc > 0 && argv[0]) {
-      *version = std::stoi(argv[0]);
-    }
-    return 0;
-  };
-
-  rc = sqlite3_exec(this->db_, query, callback, &user_version, &err_msg);
-  if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "SQL error: %s", err_msg);
-    sqlite3_free(err_msg);
-    sqlite3_close(this->db_);
-    return false;
-  }
-
-  ESP_LOGI(TAG, "Database schema version: %d", user_version);
-
-  // Create tables if they don't exist or update schema
-  if (user_version < 1) {
-    // Initial schema creation
-    const char *create_tables = R"SQL(
-      CREATE TABLE IF NOT EXISTS messages (
-        message_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        priority INTEGER NOT NULL DEFAULT 50,
-        is_enabled INTEGER NOT NULL DEFAULT 1,
-        tarif_zone INTEGER NOT NULL DEFAULT 0,
-        line_number INTEGER NOT NULL DEFAULT 0,
-        static_intro TEXT NOT NULL DEFAULT '',
-        scrolling_message TEXT NOT NULL,
-        next_message_hint TEXT NOT NULL DEFAULT '',
-        datetime_added INTEGER NOT NULL,
-        duration_seconds INTEGER DEFAULT NULL,
-        source_info TEXT DEFAULT NULL
-      );
-      
-      CREATE INDEX IF NOT EXISTS idx_messages_priority ON messages (is_enabled, priority, message_id);
-      CREATE INDEX IF NOT EXISTS idx_messages_expiry ON messages (is_enabled, duration_seconds, datetime_added);
-      
-      PRAGMA user_version = 1;
-    )SQL";
-
-    rc = sqlite3_exec(this->db_, create_tables, nullptr, nullptr, &err_msg);
-    if (rc != SQLITE_OK) {
-      ESP_LOGE(TAG, "SQL error: %s", err_msg);
-      sqlite3_free(err_msg);
-      sqlite3_close(this->db_);
-      return false;
-    }
-
-    ESP_LOGI(TAG, "Database schema created successfully");
-  }
-
-  // Implement schema upgrades as needed for future versions
-
-  return true;
-}
+// All database schema, bootstrapping, and direct DB operations are now handled by B48DatabaseManager
 
 bool B48DisplayController::refresh_message_cache() {
   std::lock_guard<std::mutex> lock(this->message_mutex_);
@@ -181,91 +132,27 @@ bool B48DisplayController::refresh_message_cache() {
   // Clear the existing cache
   this->persistent_messages_.clear();
 
-  // Prepare the query to get all active messages
-  const char *query = R"SQL(
-    SELECT message_id, priority, line_number, tarif_zone, static_intro, 
-           scrolling_message, next_message_hint, datetime_added, duration_seconds
-    FROM messages
-    WHERE
-      is_enabled = 1
-      AND (
-        duration_seconds IS NULL
-        OR (datetime_added + duration_seconds) > strftime('%s', 'now')
-      )
-    ORDER BY
-      priority DESC,
-      message_id ASC;
-  )SQL";
-
-  sqlite3_stmt *stmt;
-  int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
-  if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "Failed to prepare statement: %s", sqlite3_errmsg(this->db_));
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Database manager is not initialized");
     return false;
   }
 
-  // Fetch and process each row
-  int count = 0;
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    auto entry = std::make_shared<MessageEntry>();
-
-    entry->is_ephemeral = false;
-    entry->message_id = sqlite3_column_int(stmt, 0);
-    entry->priority = sqlite3_column_int(stmt, 1);
-    entry->line_number = sqlite3_column_int(stmt, 2);
-    entry->tarif_zone = sqlite3_column_int(stmt, 3);
-
-    const char *static_intro = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4));
-    if (static_intro)
-      entry->static_intro = static_intro;
-
-    const char *scrolling_message = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 5));
-    if (scrolling_message)
-      entry->scrolling_message = scrolling_message;
-
-    const char *next_hint = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 6));
-    if (next_hint)
-      entry->next_message_hint = next_hint;
-
-    time_t added_time = static_cast<time_t>(sqlite3_column_int64(stmt, 7));
-    int duration_seconds = sqlite3_column_type(stmt, 8) == SQLITE_NULL ? 0 : sqlite3_column_int(stmt, 8);
-
-    entry->last_display_time = 0;  // Never displayed yet
-
-    // Calculate expiry time if duration is set
-    if (duration_seconds > 0) {
-      entry->expiry_time = added_time + duration_seconds;
-    }
-
-    this->persistent_messages_.push_back(entry);
-    count++;
-  }
-
-  sqlite3_finalize(stmt);
-  ESP_LOGI(TAG, "Loaded %d messages into cache", count);
-
+  // Get messages from database manager
+  this->persistent_messages_ = this->db_manager_->get_active_persistent_messages();
+  
+  ESP_LOGI(TAG, "Loaded %d messages into cache", this->persistent_messages_.size());
   return true;
 }
 
 void B48DisplayController::check_expired_messages() {
-  const char *query = R"SQL(
-    UPDATE messages
-    SET is_enabled = 0
-    WHERE
-      is_enabled = 1
-      AND duration_seconds IS NOT NULL
-      AND (datetime_added + duration_seconds) <= strftime('%s', 'now');
-  )SQL";
-
-  char *err_msg = nullptr;
-  int rc = sqlite3_exec(this->db_, query, nullptr, nullptr, &err_msg);
-  if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "SQL error during expiry check: %s", err_msg);
-    sqlite3_free(err_msg);
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Database manager is not initialized");
     return;
   }
 
-  int changes = sqlite3_changes(this->db_);
+  // Check and expire persistent messages
+  int changes = this->db_manager_->expire_old_messages();
+  
   if (changes > 0) {
     ESP_LOGI(TAG, "Expired %d messages", changes);
     refresh_message_cache();
@@ -297,52 +184,22 @@ bool B48DisplayController::add_persistent_message(int priority, int line_number,
                                                   const std::string &static_intro, const std::string &scrolling_message,
                                                   const std::string &next_message_hint, int duration_seconds,
                                                   const std::string &source_info) {
-  const char *query = R"SQL(
-    INSERT INTO messages (
-      priority, line_number, tarif_zone, static_intro, scrolling_message, 
-      next_message_hint, datetime_added, duration_seconds, source_info
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-  )SQL";
-
-  sqlite3_stmt *stmt;
-  int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
-  if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "Failed to prepare statement: %s", sqlite3_errmsg(this->db_));
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Database manager is not initialized");
     return false;
   }
 
-  // Bind parameters
-  sqlite3_bind_int(stmt, 1, priority);
-  sqlite3_bind_int(stmt, 2, line_number);
-  sqlite3_bind_int(stmt, 3, tarif_zone);
-  sqlite3_bind_text(stmt, 4, static_intro.c_str(), -1, SQLITE_STATIC);
-  sqlite3_bind_text(stmt, 5, scrolling_message.c_str(), -1, SQLITE_STATIC);
-  sqlite3_bind_text(stmt, 6, next_message_hint.c_str(), -1, SQLITE_STATIC);
-  sqlite3_bind_int64(stmt, 7, time(nullptr));
+  bool success = this->db_manager_->add_persistent_message(
+    priority, line_number, tarif_zone, static_intro, scrolling_message,
+    next_message_hint, duration_seconds, source_info
+  );
 
-  if (duration_seconds > 0) {
-    sqlite3_bind_int(stmt, 8, duration_seconds);
-  } else {
-    sqlite3_bind_null(stmt, 8);
+  if (success) {
+    // Refresh cache after adding a new message
+    refresh_message_cache();
   }
 
-  if (!source_info.empty()) {
-    sqlite3_bind_text(stmt, 9, source_info.c_str(), -1, SQLITE_STATIC);
-  } else {
-    sqlite3_bind_null(stmt, 9);
-  }
-
-  rc = sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
-
-  if (rc != SQLITE_DONE) {
-    ESP_LOGE(TAG, "Failed to add message: %s", sqlite3_errmsg(this->db_));
-    return false;
-  }
-
-  // Refresh cache after adding a new message
-  refresh_message_cache();
-  return true;
+  return success;
 }
 
 bool B48DisplayController::update_persistent_message(int message_id, int priority, bool is_enabled, int line_number,
@@ -350,88 +207,39 @@ bool B48DisplayController::update_persistent_message(int message_id, int priorit
                                                      const std::string &scrolling_message,
                                                      const std::string &next_message_hint, int duration_seconds,
                                                      const std::string &source_info) {
-  const char *query = R"SQL(
-    UPDATE messages
-    SET 
-      priority = ?,
-      is_enabled = ?,
-      line_number = ?,
-      tarif_zone = ?,
-      static_intro = ?,
-      scrolling_message = ?,
-      next_message_hint = ?,
-      duration_seconds = ?,
-      source_info = ?
-    WHERE message_id = ?;
-  )SQL";
-
-  sqlite3_stmt *stmt;
-  int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
-  if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "Failed to prepare update statement: %s", sqlite3_errmsg(this->db_));
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Database manager is not initialized");
     return false;
   }
 
-  // Bind parameters
-  sqlite3_bind_int(stmt, 1, priority);
-  sqlite3_bind_int(stmt, 2, is_enabled ? 1 : 0);
-  sqlite3_bind_int(stmt, 3, line_number);
-  sqlite3_bind_int(stmt, 4, tarif_zone);
-  sqlite3_bind_text(stmt, 5, static_intro.c_str(), -1, SQLITE_STATIC);
-  sqlite3_bind_text(stmt, 6, scrolling_message.c_str(), -1, SQLITE_STATIC);
-  sqlite3_bind_text(stmt, 7, next_message_hint.c_str(), -1, SQLITE_STATIC);
+  bool success = this->db_manager_->update_persistent_message(
+    message_id, priority, is_enabled, line_number, tarif_zone,
+    static_intro, scrolling_message, next_message_hint,
+    duration_seconds, source_info
+  );
 
-  if (duration_seconds > 0) {
-    sqlite3_bind_int(stmt, 8, duration_seconds);
-  } else {
-    sqlite3_bind_null(stmt, 8);
+  if (success) {
+    // Refresh cache after updating a message
+    refresh_message_cache();
   }
 
-  if (!source_info.empty()) {
-    sqlite3_bind_text(stmt, 9, source_info.c_str(), -1, SQLITE_STATIC);
-  } else {
-    sqlite3_bind_null(stmt, 9);
-  }
-
-  sqlite3_bind_int(stmt, 10, message_id);
-
-  rc = sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
-
-  if (rc != SQLITE_DONE) {
-    ESP_LOGE(TAG, "Failed to update message: %s", sqlite3_errmsg(this->db_));
-    return false;
-  }
-
-  // Refresh cache after updating a message
-  refresh_message_cache();
-  return true;
+  return success;
 }
 
 bool B48DisplayController::delete_persistent_message(int message_id) {
-  // Using logical deletion to reduce flash wear
-  const char *query = "UPDATE messages SET is_enabled = 0 WHERE message_id = ?;";
-
-  sqlite3_stmt *stmt;
-  int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
-  if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "Failed to prepare delete statement: %s", sqlite3_errmsg(this->db_));
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Database manager is not initialized");
     return false;
   }
 
-  sqlite3_bind_int(stmt, 1, message_id);
+  bool success = this->db_manager_->delete_persistent_message(message_id);
 
-  rc = sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
-
-  if (rc != SQLITE_DONE) {
-    ESP_LOGE(TAG, "Failed to delete message: %s", sqlite3_errmsg(this->db_));
-    return false;
+  if (success) {
+    // Refresh cache after deleting a message
+    refresh_message_cache();
   }
 
-  // Refresh cache after deleting a message
-  refresh_message_cache();
-  return true;
+  return success;
 }
 
 bool B48DisplayController::add_ephemeral_message(int priority, int line_number, int tarif_zone,

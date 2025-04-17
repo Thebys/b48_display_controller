@@ -11,7 +11,7 @@ alwaysApply: true
 This document specifies the SQLite database schema for storing **persistent** messages used by the `message_display_controller` external component. The database (`messages.db`) resides on the LittleFS partition. **Ephemeral (temporary, non-persistent) messages bypass this database entirely and are handled in RAM.** The schema supports a priority-based display scheduling algorithm implemented in the C++ component, which operates primarily on a RAM cache populated from this database.
 ## Database File
 *   **Name:** `messages.db`
-*   **Location:** Root of the LittleFS filesystem partition on the ESP32.
+*   **Location:** `/littlefs/messages.db` (Assuming LittleFS is mounted at `/littlefs`).
 ## Core Principles
 *   **Persistence:** Store messages intended to survive reboots.
 *   **Priority-Driven:** Support a scheduling algorithm based on message priority.

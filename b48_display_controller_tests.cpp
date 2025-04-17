@@ -3,11 +3,45 @@
 #include <stdexcept> // Include for std::exception
 #include <functional> // Include for std::function if needed, but pointer works
 #include <LittleFS.h> // Include LittleFS header
+#include <sqlite3.h> // Include SQLite3 header
+#include <vector>    // Include for std::vector
+#include <string>    // Include for std::string
 
 namespace esphome {
 namespace b48_display_controller {
 
 static const char *const TAG = "b48c.test"; // Separate tag for test logs
+
+// Helper structure to hold data expected from the callback
+struct TestSqliteCallbackData {
+    bool row_found = false;
+    int expected_id = -1;
+    std::string expected_content;
+};
+
+// Simple callback function for the SQLite test
+static int testSqliteCallback(void *data, int argc, char **argv, char **azColName) {
+    TestSqliteCallbackData* test_data = static_cast<TestSqliteCallbackData*>(data);
+    test_data->row_found = true; // Mark that we got at least one row
+
+    ESP_LOGD(TAG, "Callback: %d columns", argc);
+    for (int i = 0; i < argc; i++){
+        ESP_LOGD(TAG, "  %s = %s", azColName[i], argv[i] ? argv[i] : "NULL");
+        // Basic validation: Check if column name matches and value matches expected
+        if (strcmp(azColName[i], "id") == 0) {
+            if (argv[i] && std::stoi(argv[i]) != test_data->expected_id) {
+                ESP_LOGE(TAG, "[TEST][FAIL] SQLite Callback: ID mismatch. Expected %d, Got %s", test_data->expected_id, argv[i]);
+                return 1; // Signal error
+            }
+        } else if (strcmp(azColName[i], "content") == 0) {
+             if (!argv[i] || test_data->expected_content != argv[i]) {
+                ESP_LOGE(TAG, "[TEST][FAIL] SQLite Callback: Content mismatch. Expected '%s', Got '%s'", test_data->expected_content.c_str(), argv[i] ? argv[i] : "NULL");
+                return 1; // Signal error
+            }
+        }
+    }
+    return 0; // Success
+}
 
 // Helper function to execute a single test safely
 bool B48DisplayController::executeTest(bool (B48DisplayController::*testMethod)(), const char* testName) {
@@ -45,9 +79,12 @@ void B48DisplayController::runSelfTests() {
         fail_count++;
     }
 
-    // --- Add more test method calls here using executeTest ---
-    // Example:
-    // if (executeTest(&B48DisplayController::testDatabaseConnection, "testDatabaseConnection")) { pass_count++; } else { fail_count++; }
+    // Add the new SQLite test
+    if (executeTest(&B48DisplayController::testSqliteBasicOperations, "testSqliteBasicOperations")) {
+        pass_count++;
+    } else {
+        fail_count++;
+    }
 
     // --- Test Summary ---
     ESP_LOGI(TAG, "--- Self-Test Summary --- Passed: %d, Failed: %d ---", pass_count, fail_count);
@@ -109,6 +146,117 @@ bool B48DisplayController::testLittleFSMount() {
 
     ESP_LOGD(TAG, "LittleFS basic I/O test PASSED.");
     return true;
+}
+
+// New test for basic SQLite operations
+bool B48DisplayController::testSqliteBasicOperations() {
+    ESP_LOGD(TAG, "Starting SQLite basic operations test...");
+
+    // Initialize SQLite library - REMOVED: Assume global init if needed
+    // if (sqlite3_initialize() != SQLITE_OK) {
+    //     ESP_LOGE(TAG, "[TEST][FAIL] SQLite: Failed to initialize library.");
+    //     return false;
+    // }
+
+    const char* dbFilenameRelative = "/test_sqlite.db";     // Path relative to LittleFS root (starts with /)
+    const char* littleFsBasePath = "/littlefs";         // Base path where LittleFS is mounted
+    std::string fullDbPath = std::string(littleFsBasePath) + dbFilenameRelative; // Path for sqlite3_open
+
+    sqlite3 *test_db = nullptr;
+    char *err_msg = nullptr;
+    int rc;
+    bool success = false; // Assume failure initially
+
+    // Ensure test DB doesn't exist using the path relative to LittleFS root
+    ESP_LOGD(TAG, "SQLite Test: Checking/Removing existing file using relative path: %s", dbFilenameRelative);
+    if (LittleFS.exists(dbFilenameRelative)) {
+        ESP_LOGD(TAG, "SQLite Test: Removing existing test database using relative path: %s", dbFilenameRelative);
+        if (!LittleFS.remove(dbFilenameRelative)) {
+            ESP_LOGE(TAG, "[TEST][FAIL] SQLite: Failed to remove existing test database '%s'. Cannot proceed.", dbFilenameRelative);
+            return false; // Early exit if cleanup fails
+        }
+    } else {
+        ESP_LOGD(TAG, "SQLite Test: File '%s' does not exist.", dbFilenameRelative);
+    }
+
+    // 1. Open the database using the full path
+    ESP_LOGD(TAG, "SQLite Test: Opening database using full path '%s'", fullDbPath.c_str());
+    rc = sqlite3_open(fullDbPath.c_str(), &test_db);
+    if (rc != SQLITE_OK) {
+        ESP_LOGE(TAG, "[TEST][FAIL] SQLite: Can't open database '%s': %s", fullDbPath.c_str(), sqlite3_errmsg(test_db));
+    } else {
+        ESP_LOGD(TAG, "SQLite Test: Database opened successfully.");
+
+        // 2. Create a table
+        ESP_LOGD(TAG, "SQLite Test: Creating table 'test_table'");
+        const char *sql_create = "CREATE TABLE test_table (id INTEGER PRIMARY KEY, content TEXT);";
+        rc = sqlite3_exec(test_db, sql_create, nullptr, nullptr, &err_msg);
+        if (rc != SQLITE_OK) {
+            ESP_LOGE(TAG, "[TEST][FAIL] SQLite: Failed to create table: %s", err_msg);
+            sqlite3_free(err_msg);
+        } else {
+            ESP_LOGD(TAG, "SQLite Test: Table created successfully.");
+
+            // 3. Insert data
+            ESP_LOGD(TAG, "SQLite Test: Inserting data");
+            const char *sql_insert = "INSERT INTO test_table (id, content) VALUES (1, 'Test Content');";
+            rc = sqlite3_exec(test_db, sql_insert, nullptr, nullptr, &err_msg);
+            if (rc != SQLITE_OK) {
+                ESP_LOGE(TAG, "[TEST][FAIL] SQLite: Failed to insert data: %s", err_msg);
+                sqlite3_free(err_msg);
+            } else {
+                ESP_LOGD(TAG, "SQLite Test: Data inserted successfully.");
+
+                // 4. Select and verify data
+                ESP_LOGD(TAG, "SQLite Test: Selecting data for verification");
+                const char *sql_select = "SELECT id, content FROM test_table WHERE id = 1;";
+                TestSqliteCallbackData callback_data;
+                callback_data.expected_id = 1;
+                callback_data.expected_content = "Test Content";
+
+                rc = sqlite3_exec(test_db, sql_select, testSqliteCallback, &callback_data, &err_msg);
+                if (rc != SQLITE_OK) {
+                    ESP_LOGE(TAG, "[TEST][FAIL] SQLite: Failed to select data: %s", err_msg);
+                    sqlite3_free(err_msg);
+                } else if (!callback_data.row_found) {
+                    ESP_LOGE(TAG, "[TEST][FAIL] SQLite: No rows returned from select query.");
+                } else {
+                    // Further checks are done inside the callback
+                    ESP_LOGD(TAG, "SQLite Test: Data selection and verification successful.");
+                    // If all nested steps succeeded, mark the test as successful
+                    success = true;
+                }
+            }
+        }
+    }
+
+    // 5. Close the database (always attempt, sqlite3_close handles nullptr)
+    ESP_LOGD(TAG, "SQLite Test: Closing database.");
+    sqlite3_close(test_db);
+
+    // 6. Remove the test database file using the path relative to LittleFS root
+    ESP_LOGD(TAG, "SQLite Test: Removing test database file using relative path '%s'.", dbFilenameRelative);
+    if (LittleFS.exists(dbFilenameRelative)) {
+        if (!LittleFS.remove(dbFilenameRelative)) {
+            ESP_LOGW(TAG, "SQLite Test: Failed to remove test database file '%s'.", dbFilenameRelative);
+        } else {
+            ESP_LOGD(TAG, "SQLite Test: Test database file '%s' removed.", dbFilenameRelative);
+        }
+    } else {
+        ESP_LOGD(TAG, "SQLite Test: Test database file '%s' did not exist or was already removed.", dbFilenameRelative);
+    }
+
+    if (success) {
+        ESP_LOGD(TAG, "SQLite basic operations test PASSED.");
+    } else {
+         ESP_LOGE(TAG, "SQLite basic operations test FAILED.");
+    }
+
+    // Shutdown SQLite library
+    sqlite3_shutdown();
+    ESP_LOGD(TAG, "SQLite Test: Library shutdown.");
+
+    return success;
 }
 
 // --- Add implementations for other test methods here ---
