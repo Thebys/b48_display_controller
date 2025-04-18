@@ -38,17 +38,9 @@ class B48HAIntegration : public Component, public api::CustomAPIDevice {
   void register_services_();
 
   // --- Service Handler Methods ---
-  void handle_add_message_service_(int priority, int line_number, int tarif_zone,
-                                   std::string scrolling_message, std::string static_intro,
-                                   std::string next_message_hint, int duration_seconds, std::string source_info);
-
   void handle_delete_message_service_(int message_id);
 
-  void handle_clear_all_messages_service_();
-
-  void handle_display_ephemeral_message_service_(int priority, int line_number, int tarif_zone,
-                                                  std::string scrolling_message, std::string static_intro,
-                                                  std::string next_message_hint, int display_count, int ttl_seconds);
+  void handle_wipe_database_service_();
 
   void handle_dump_database_service_();
 

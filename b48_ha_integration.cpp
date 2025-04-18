@@ -29,22 +29,12 @@ void B48HAIntegration::dump_config() {
 void B48HAIntegration::register_services_() {
   ESP_LOGD(TAG, "Registering HA services...");
 
-  // Register service for adding persistent messages
-  register_service(&B48HAIntegration::handle_add_message_service_, "add_persistent_message",
-                 {"priority", "line_number", "tarif_zone", "static_intro", "scrolling_message", 
-                  "next_message_hint", "duration_seconds", "source_info"});
-
   // Register service for deleting persistent messages
   register_service(&B48HAIntegration::handle_delete_message_service_, "delete_persistent_message",
                  {"message_id"});
 
-  // Register service for clearing all persistent messages
-  register_service(&B48HAIntegration::handle_clear_all_messages_service_, "clear_all_persistent_messages");
-
-  // Register service for adding ephemeral messages
-  register_service(&B48HAIntegration::handle_display_ephemeral_message_service_, "b48_display_ephemeral_message",
-                   {"priority", "line_number", "tarif_zone", "scrolling_message",
-                    "static_intro", "next_message_hint", "display_count", "ttl_seconds"});
+  // Register service for wiping the database
+  register_service(&B48HAIntegration::handle_wipe_database_service_, "wipe_database");
 
   // Register service for dumping database diagnostics
   register_service(&B48HAIntegration::handle_dump_database_service_, "dump_messages_for_diagnostics");
@@ -53,44 +43,6 @@ void B48HAIntegration::register_services_() {
 }
 
 // --- Service Handlers ---
-
-void B48HAIntegration::handle_add_message_service_(int priority, int line_number, int tarif_zone,
-                                                   std::string scrolling_message, std::string static_intro,
-                                                   std::string next_message_hint, int duration_seconds, std::string source_info) {
-  ESP_LOGI(TAG, "Service add_persistent_message called with: priority=%d, line=%d, zone=%d, msg='%s', intro='%s', next='%s', duration=%d",
-           priority, line_number, tarif_zone, scrolling_message.c_str(), static_intro.c_str(), 
-           next_message_hint.c_str(), duration_seconds);
-
-  // Basic validation (can add more specific checks)
-  if (scrolling_message.empty()) {
-    ESP_LOGW(TAG, "Add message failed: scrolling_message cannot be empty.");
-    return;
-  }
-  if (priority < 0 || priority > 100) {
-    ESP_LOGW(TAG, "Add message failed: Priority (%d) must be between 0 and 100.", priority);
-    return;
-  }
-  // Add validation for line_number, tarif_zone if needed based on display constraints
-
-  // Use default source_info if empty
-  if (source_info.empty()) {
-      source_info = "HomeAssistant";
-  }
-
-  ESP_LOGD(TAG, "Calling parent controller add_persistent_message with check_duplicates=false");
-  
-  // Call parent controller's method to handle DB interaction - set check_duplicates to false to allow similar messages
-  bool success = parent_->add_persistent_message(priority, line_number, tarif_zone,
-                                                  static_intro, scrolling_message, next_message_hint,
-                                                  duration_seconds, source_info, false);
-
-  if (success) {
-    ESP_LOGI(TAG, "Persistent message added successfully via HA service.");
-    // Parent's add_persistent_message should handle updating the queue size sensor
-  } else {
-    ESP_LOGE(TAG, "Failed to add persistent message via HA service.");
-  }
-}
 
 void B48HAIntegration::handle_delete_message_service_(int message_id) {
   ESP_LOGD(TAG, "Service b48_delete_message called: message_id=%d", message_id);
@@ -110,53 +62,17 @@ void B48HAIntegration::handle_delete_message_service_(int message_id) {
   }
 }
 
-void B48HAIntegration::handle_clear_all_messages_service_() {
-  ESP_LOGD(TAG, "Service b48_clear_all_messages called.");
+void B48HAIntegration::handle_wipe_database_service_() {
+  ESP_LOGW(TAG, "Service wipe_database called. Wiping and reinitializing database...");
 
-  // Call parent controller's method (assuming it exists)
-  bool success = parent_->clear_all_persistent_messages();
-
-  if (success) {
-    ESP_LOGI(TAG, "All persistent messages cleared successfully via HA service.");
-    // Parent's clear_all_persistent_messages should handle updating the queue size sensor
-  } else {
-    ESP_LOGE(TAG, "Failed to clear all persistent messages via HA service.");
-  }
-}
-
-void B48HAIntegration::handle_display_ephemeral_message_service_(int priority, int line_number, int tarif_zone,
-                                                                 std::string scrolling_message, std::string static_intro,
-                                                                 std::string next_message_hint, int display_count, int ttl_seconds) {
-  ESP_LOGD(TAG, "Service b48_display_ephemeral_message called: priority=%d, line=%d, zone=%d, msg='%s'",
-           priority, line_number, tarif_zone, scrolling_message.substr(0, 20).c_str()); // Log truncated message
-
-  // Basic validation
-  if (scrolling_message.empty()) {
-    ESP_LOGW(TAG, "Display ephemeral message failed: scrolling_message cannot be empty.");
-    return;
-  }
-   if (priority < 0 || priority > 100) {
-    ESP_LOGW(TAG, "Display ephemeral message failed: Priority (%d) must be between 0 and 100.", priority);
-    return;
-  }
-  if (display_count < 0) {
-     ESP_LOGW(TAG, "Display ephemeral message failed: display_count cannot be negative.");
-     return;
-  }
-   if (ttl_seconds < 0) {
-     ESP_LOGW(TAG, "Display ephemeral message failed: ttl_seconds cannot be negative.");
-     return;
-  }
-
-  // Call parent controller's method
-  bool success = parent_->add_ephemeral_message(priority, line_number, tarif_zone,
-                                                  static_intro, scrolling_message, next_message_hint,
-                                                  display_count, ttl_seconds);
+  // Call parent controller's new method
+  bool success = parent_->wipe_and_reinitialize_database();
 
   if (success) {
-    ESP_LOGI(TAG, "Ephemeral message added successfully via HA service.");
+    ESP_LOGW(TAG, "Database wipe and reinitialization successful via HA service.");
+    // Parent's wipe method should handle updating the queue size sensor
   } else {
-    ESP_LOGE(TAG, "Failed to add ephemeral message via HA service.");
+    ESP_LOGE(TAG, "Failed to wipe and reinitialize database via HA service.");
   }
 }
 

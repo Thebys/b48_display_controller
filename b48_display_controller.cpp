@@ -207,35 +207,109 @@ void B48DisplayController::dump_config() {
 
 // --- Public Methods Called by HA Integration ---
 
-bool B48DisplayController::add_persistent_message(int priority, int line_number, int tarif_zone,
-                                                  const std::string &static_intro, const std::string &scrolling_message,
-                                                  const std::string &next_message_hint, int duration_seconds,
-                                                  const std::string &source_info, bool check_duplicates) {
+// Implementation for the unified add_message function
+bool B48DisplayController::add_message(int priority, int line_number, int tarif_zone,
+                                     const std::string &static_intro, const std::string &scrolling_message,
+                                     const std::string &next_message_hint, int duration_seconds,
+                                     const std::string &source_info, bool check_duplicates) {
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
+
+    // Determine if the message is ephemeral or persistent based on duration
+    if (duration_seconds > 0 && duration_seconds < EPHEMERAL_DURATION_THRESHOLD_SECONDS) {
+        // --- Handle Ephemeral Message (Not saved to DB) ---
+        ESP_LOGD(TAG, "Adding ephemeral message (duration %ds < %ds): %s", 
+                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, scrolling_message.substr(0, 30).c_str());
+
+        auto msg = std::make_shared<MessageEntry>();
+        msg->message_id = -1; // Ephemeral messages don't have a DB ID
+        msg->priority = priority;
+        msg->line_number = line_number;
+        msg->tarif_zone = tarif_zone;
+        msg->static_intro = static_intro;
+        msg->scrolling_message = scrolling_message;
+        msg->next_message_hint = next_message_hint;
+        msg->expiry_time = time(nullptr) + duration_seconds; // Set TTL based on current time
+        msg->remaining_displays = -1; // Set to -1 = infinite displays until TTL expires (matches previous logic)
+        msg->last_display_time = 0; // Use correct member name
+        msg->is_ephemeral = true; // Mark as ephemeral
+
+        this->ephemeral_messages_.push_back(msg);
+        ESP_LOGD(TAG, "Ephemeral message added to RAM queue. Current ephemeral count: %d", this->ephemeral_messages_.size());
+        update_ha_queue_size(); // Update HA sensor
+        return true;
+
+    } else {
+        // --- Handle Persistent Message (Saved to DB) ---
+        ESP_LOGD(TAG, "Adding persistent message (duration %ds >= %ds or <= 0): %s", 
+                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, scrolling_message.substr(0, 30).c_str());
+
+        if (!this->db_manager_) {
+            ESP_LOGE(TAG, "Database manager is not initialized for add_message (persistent)");
+            return false;
+        }
+
+        // Ensure duration is valid (set to 0 for permanent if > 1 year)
+        int actual_duration = duration_seconds;
+        if (actual_duration > 31536000) { // 1 year in seconds
+            ESP_LOGW(TAG, "Duration %d exceeds maximum (1 year), setting message to permanent (duration 0)", duration_seconds);
+            actual_duration = 0; // Set to 0 for permanent instead of capping
+        }
+
+        // Call the database manager to add the message
+        bool success = this->db_manager_->add_persistent_message(
+            priority, line_number, tarif_zone, static_intro, scrolling_message,
+            next_message_hint, actual_duration, // Use potentially capped duration
+            source_info.empty() ? "Persistent" : source_info, 
+            check_duplicates
+        );
+
+        if (success) {
+            ESP_LOGI(TAG, "Successfully added message to database. Refreshing cache.");
+            // Refresh cache and update HA sensor
+            if (refresh_message_cache()) {
+                ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
+                update_ha_queue_size();
+            } else {
+                ESP_LOGE(TAG, "Failed to refresh message cache after adding persistent message.");
+                // Message added to DB, but cache might be stale. Continue anyway.
+            }
+        } else {
+            ESP_LOGE(TAG, "Failed to add message to database.");
+        }
+        return success;
+    }
+}
+
+
+bool B48DisplayController::update_message(int message_id, int priority, bool is_enabled,
+                                                    int line_number, int tarif_zone, const std::string &static_intro,
+                                                    const std::string &scrolling_message, const std::string &next_message_hint,
+                                                    int duration_seconds, const std::string &source_info) {
   if (!this->db_manager_) {
-    ESP_LOGE(TAG, "Database manager is not initialized for add_persistent_message");
+    ESP_LOGE(TAG, "Database manager is not initialized for update_persistent_message");
     return false;
   }
 
-  ESP_LOGD(TAG, "Adding persistent message with priority %d: %s", priority, scrolling_message.substr(0, 30).c_str());
+  ESP_LOGD(TAG, "Updating persistent message with ID %d: %s", message_id, scrolling_message.substr(0, 30).c_str());
 
-  // Call the database manager to add the message
-  bool success = this->db_manager_->add_persistent_message(
-    priority, line_number, tarif_zone, static_intro, scrolling_message,
-    next_message_hint, duration_seconds, source_info, check_duplicates
+  // Call the database manager to update the message
+  bool success = this->db_manager_->update_persistent_message(
+    message_id, priority, is_enabled, line_number, tarif_zone, static_intro, scrolling_message,
+    next_message_hint, duration_seconds, source_info
   );
 
   if (success) {
-    ESP_LOGI(TAG, "Successfully added message to database. Refreshing cache.");
+    ESP_LOGI(TAG, "Successfully updated message in database. Refreshing cache.");
     // Refresh cache and update HA sensor
     if (refresh_message_cache()) {
         ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
         update_ha_queue_size();
     } else {
-        ESP_LOGE(TAG, "Failed to refresh message cache after adding persistent message.");
-        // Message added to DB, but cache might be stale. Continue anyway.
+        ESP_LOGE(TAG, "Failed to refresh message cache after updating persistent message.");
+        // Message updated in DB, but cache might be stale. Continue anyway.
     }
   } else {
-    ESP_LOGE(TAG, "Failed to add message to database.");
+    ESP_LOGE(TAG, "Failed to update message in database.");
   }
 
   return success;
@@ -260,81 +334,61 @@ bool B48DisplayController::delete_persistent_message(int message_id) {
   return success;
 }
 
-bool B48DisplayController::clear_all_persistent_messages() {
+// New method to wipe and reinitialize the database and clear RAM cache
+bool B48DisplayController::wipe_and_reinitialize_database() {
+    ESP_LOGW(TAG, "Wiping and reinitializing database...");
+    std::lock_guard<std::mutex> lock(this->message_mutex_); // Lock access to message caches
+
     if (!this->db_manager_) {
-        ESP_LOGE(TAG, "Database manager is not initialized for clear_all_persistent_messages");
+        ESP_LOGE(TAG, "Database manager is not initialized for wipe_and_reinitialize_database");
         return false;
     }
-    // Call DB manager to clear messages
-    bool success = this->db_manager_->clear_all_messages();
 
-    if (success) {
-        ESP_LOGI(TAG, "Cleared all persistent messages.");
-        // Refresh cache and update HA sensor
-        if (refresh_message_cache()) {
-            update_ha_queue_size();
-        } else {
-            ESP_LOGE(TAG, "Failed to refresh message cache after clearing all messages.");
-        }
-    } else {
-        ESP_LOGE(TAG, "Failed to clear all persistent messages.");
+    // 1. Wipe the database (drops and recreates table)
+    if (!this->db_manager_->wipe_database()) {
+        ESP_LOGE(TAG, "Failed to wipe database.");
+        return false; // Don't proceed if wipe fails
     }
-    return success;
-}
 
-bool B48DisplayController::add_ephemeral_message(int priority, int line_number, int tarif_zone,
-                                                 const std::string &static_intro, const std::string &scrolling_message,
-                                                 const std::string &next_message_hint, int display_count,
-                                                 int ttl_seconds) {
-  std::lock_guard<std::mutex> lock(this->message_mutex_); // Lock access to ephemeral_messages_
+    // 2. Reinitialize the database (recreates schema)
+    if (!this->db_manager_->initialize()) {
+        ESP_LOGE(TAG, "Failed to re-initialize database after wipe.");
+        // Mark component as failed maybe?
+        this->mark_failed(); 
+        return false;
+    }
 
-  auto entry = std::make_shared<MessageEntry>();
-  entry->is_ephemeral = true;
-  entry->message_id = -1; // Ephemeral messages don't have a DB ID
-  entry->priority = priority;
-  entry->line_number = line_number;
-  entry->tarif_zone = tarif_zone;
-  entry->static_intro = static_intro;
-  entry->scrolling_message = scrolling_message;
-  entry->next_message_hint = next_message_hint;
-  entry->remaining_displays = (display_count <= 0) ? -1 : display_count; // -1 for infinite displays until TTL
-  entry->last_display_time = 0;
+    // 3. Clear ephemeral message cache in RAM
+    this->ephemeral_messages_.clear();
+    ESP_LOGD(TAG, "Cleared ephemeral message cache.");
 
-  if (ttl_seconds > 0) {
-    entry->expiry_time = time(nullptr) + ttl_seconds;
-  } else {
-    entry->expiry_time = 0; // No time-based expiry
-  }
+    // 4. Refresh persistent cache (should be empty now)
+    if (refresh_message_cache()) { 
+        ESP_LOGD(TAG, "Refreshed message cache after wipe.");
+    } else {
+        ESP_LOGE(TAG, "Failed to refresh message cache after wipe.");
+        // Non-fatal, but indicates an issue
+    }
 
-  // Add to the ephemeral queue
-  this->ephemeral_messages_.push_back(entry);
-  ESP_LOGI(TAG, "Added ephemeral message (Priority: %d, TTL: %ds, Count: %d): %s",
-            priority, ttl_seconds, display_count, scrolling_message.substr(0, 30).c_str());
-
-  // Sort ephemeral messages by priority (higher first)
-  std::sort(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
-            [](const std::shared_ptr<MessageEntry>& a, const std::shared_ptr<MessageEntry>& b) {
-              return a->priority > b->priority;
-            });
-
-  // No need to update HA queue size sensor for ephemeral messages
-  return true;
+    // 5. Update HA queue size sensor
+    update_ha_queue_size();
+    
+    ESP_LOGW(TAG, "Database wipe and reinitialization complete.");
+    return true;
 }
 
 // --- Internal HA State Update ---
 void B48DisplayController::update_ha_queue_size() {
-    if (this->ha_integration_ && this->db_manager_) {
-        // Fetch current persistent message count from DB manager
-        // Requires db_manager_ to have a get_persistent_message_count() method
-        int count = this->db_manager_->get_message_count(); // Assuming this counts active persistent messages
-        if (count >= 0) { // Check if count retrieval was successful
-            this->ha_integration_->publish_queue_size(count);
-        } else {
-            ESP_LOGW(TAG, "Failed to get message count from DB manager for HA update.");
-        }
-    } else if (this->ha_integration_) {
-        ESP_LOGW(TAG, "Cannot update HA queue size: DB manager not initialized.");
-    }
+  // Combine counts from both persistent cache and ephemeral queue
+  int total_messages = 0;
+  {
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
+    total_messages = this->persistent_messages_.size() + this->ephemeral_messages_.size();
+  }
+
+  if (this->ha_integration_) {
+    this->ha_integration_->publish_queue_size(total_messages);
+  }
 }
 
 // --- Database Methods (Modified) ---

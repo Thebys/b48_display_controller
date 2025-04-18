@@ -22,6 +22,10 @@
 namespace esphome {
 namespace b48_display_controller {
 
+// Define the threshold (in seconds) below which messages are treated as ephemeral (not saved to DB)
+// 600 seconds = 10 minutes
+const int EPHEMERAL_DURATION_THRESHOLD_SECONDS = 600;
+
 // Forward declare HA integration class
 class B48HAIntegration;
 
@@ -70,26 +74,39 @@ class B48DisplayController : public Component {
   void set_message_queue_size_sensor(sensor::Sensor *sensor);
 
   // Message management
-  bool add_persistent_message(int priority, int line_number, int tarif_zone, 
-                            const std::string &static_intro, const std::string &scrolling_message,
-                            const std::string &next_message_hint, int duration_seconds = 0,
-                            const std::string &source_info = "", bool check_duplicates = true);
+  /**
+   * @brief Adds a message to be displayed. Handles both persistent and ephemeral messages based on duration.
+   * 
+   * If duration_seconds is > 0 and < EPHEMERAL_DURATION_THRESHOLD_SECONDS, the message is treated as ephemeral (not stored).
+   * If duration_seconds is 0 or negative, the message is persistent and never expires.
+   * If duration_seconds is >= EPHEMERAL_DURATION_THRESHOLD_SECONDS, the message is persistent with an expiration time.
+   * 
+   * @param priority Message priority (0-100).
+   * @param line_number Target display line (1-based).
+   * @param tarif_zone Tarif zone for display.
+   * @param static_intro Static text before scrolling message.
+   * @param scrolling_message Main scrolling text.
+   * @param next_message_hint Hint text for the next message.
+   * @param duration_seconds Duration in seconds. Controls persistence and expiration.
+   * @param source_info Information about the message source (e.g., "HA Service").
+   * @param check_duplicates If true, prevents adding identical messages already in the DB.
+   * @return true if the message was added successfully, false otherwise.
+   */
+  bool add_message(int priority, int line_number, int tarif_zone, 
+                   const std::string &static_intro, const std::string &scrolling_message,
+                   const std::string &next_message_hint, int duration_seconds,
+                   const std::string &source_info = "", bool check_duplicates = true);
   
-  bool update_persistent_message(int message_id, int priority, bool is_enabled,
+  bool update_message(int message_id, int priority, bool is_enabled,
                               int line_number, int tarif_zone, const std::string &static_intro,
                               const std::string &scrolling_message, const std::string &next_message_hint,
                               int duration_seconds = 0, const std::string &source_info = "");
   
   bool delete_persistent_message(int message_id);
   
-  bool add_ephemeral_message(int priority, int line_number, int tarif_zone,
-                           const std::string &static_intro, const std::string &scrolling_message,
-                           const std::string &next_message_hint, int display_count = 1,
-                           int ttl_seconds = 300);
-
   // --- Public methods called by HA Integration Layer ---
   B48DatabaseManager* get_database_manager() { return db_manager_.get(); }
-  bool clear_all_persistent_messages();
+  bool wipe_and_reinitialize_database();
   void dump_database_for_diagnostics();
 
   // --- Internal helper to update HA state ---
