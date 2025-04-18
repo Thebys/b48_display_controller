@@ -36,7 +36,8 @@ class B48HAIntegration;
 enum DisplayState {
   TRANSITION_MODE,
   MESSAGE_PREPARATION,
-  DISPLAY_MESSAGE
+  DISPLAY_MESSAGE,
+  TIME_TEST_MODE // New state for time test mode
 };
 
 class B48DisplayController : public Component {
@@ -112,6 +113,11 @@ class B48DisplayController : public Component {
   // --- Internal helper to update HA state ---
   void update_ha_queue_size();
 
+  // Time test mode public methods
+  void start_time_test_mode();
+  void stop_time_test_mode();
+  bool is_time_test_mode_active() const { return time_test_mode_active_; }
+
  protected:
   // Database methods
   bool init_database();
@@ -148,6 +154,9 @@ class B48DisplayController : public Component {
   bool testSerialProtocol();
   
   // Add new test declarations above here
+
+  // Add new state machine method for time test mode
+  void run_time_test_mode();
 
  private: // Helper for test execution
   bool executeTest(bool (B48DisplayController::*testMethod)(), const char* testName);
@@ -193,6 +202,12 @@ class B48DisplayController : public Component {
 
   // Tracking last display times for messages
   std::map<int, time_t> last_display_times_;
+
+  // Time test mode variables
+  bool time_test_mode_active_{false};
+  unsigned int current_time_test_value_{0};
+  unsigned long last_time_test_update_{0};
+  static constexpr unsigned long TIME_TEST_INTERVAL_MS = 800; // Update every 800ms
 };
 
 }  // namespace b48_display_controller

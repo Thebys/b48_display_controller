@@ -43,6 +43,11 @@ class B48HAIntegration : public Component, public api::CustomAPIDevice {
   void handle_wipe_database_service_();
 
   void handle_dump_database_service_();
+  
+  // New time test mode service handlers
+  void handle_start_time_test_service_();
+  
+  void handle_stop_time_test_service_();
 
   // --- Member Variables ---
   B48DisplayController *parent_; // Pointer to the main controller component

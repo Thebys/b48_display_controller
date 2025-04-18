@@ -201,8 +201,10 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
 
   // Log original vs converted if there were changes
   if (safe_scrolling_message != scrolling_message) {
-    ESP_LOGW(TAG, "Original message contained non-ASCII chars, converted: '%s' -> '%s'", 
-            scrolling_message.substr(0, 30).c_str(), safe_scrolling_message.substr(0, 30).c_str());
+    ESP_LOGW(TAG, "Original message contained non-ASCII chars, converted: '%s%s' -> '%s%s'", 
+            scrolling_message.substr(0, 30).c_str(), scrolling_message.length() > 30 ? "..." : "",
+            safe_scrolling_message.substr(0, 30).c_str(), safe_scrolling_message.length() > 30 ? "..." : "");
+    ESP_LOGW(TAG, "Message lengths: original=%zu, converted=%zu", scrolling_message.length(), safe_scrolling_message.length());
   }
 
   // Validate scrolling_message is not empty
@@ -211,9 +213,11 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
     return false;
   }
 
-  ESP_LOGI(TAG, "Adding message: Priority=%d, Line=%d, Zone=%d, Text='%s', CheckDup=%s", 
-          priority, line_number, tarif_zone, safe_scrolling_message.substr(0, 30).c_str(), 
-          check_duplicates ? "true" : "false");
+    ESP_LOGI(TAG, "Adding message: Priority=%d, Line=%d, Zone=%d, Text='%s%s' (len=%zu), CheckDup=%s", 
+            priority, line_number, tarif_zone, 
+            safe_scrolling_message.substr(0, 30).c_str(), safe_scrolling_message.length() > 30 ? "..." : "",
+            safe_scrolling_message.length(),
+            check_duplicates ? "true" : "false");
 
   // Check for duplicates only if flag is set
   if (check_duplicates) {
@@ -458,9 +462,11 @@ std::vector<std::shared_ptr<MessageEntry>> B48DatabaseManager::get_active_persis
       entry->expiry_time = added_time + duration_seconds;
     }
     
-    ESP_LOGD(TAG, "Loaded message ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s'", 
+    ESP_LOGD(TAG, "Loaded message ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s%s' (len=%zu)", 
              entry->message_id, entry->priority, entry->line_number, entry->tarif_zone,
-             entry->scrolling_message.substr(0, 30).c_str());
+             entry->scrolling_message.substr(0, 30).c_str(), 
+             entry->scrolling_message.length() > 30 ? "..." : "",
+             entry->scrolling_message.length());
 
     messages.push_back(entry);
     count++;
@@ -743,9 +749,12 @@ void B48DatabaseManager::dump_all_messages() {
              message_id, is_enabled ? "ENABLED" : "disabled", priority, line_number, tarif_zone,
              time_str, expiry_str);
              
-    ESP_LOGI(TAG, "  Intro: '%s', Message: '%s', Next: '%s', Source: '%s'",
+    std::string scroll_msg = scrolling_message ? scrolling_message : "";
+    ESP_LOGI(TAG, "  Intro: '%s', Message: '%s%s' (len=%zu), Next: '%s', Source: '%s'",
              static_intro ? static_intro : "", 
-             scrolling_message ? scrolling_message : "",
+             scroll_msg.substr(0, 30).c_str(), 
+             scroll_msg.length() > 30 ? "..." : "",
+             scroll_msg.length(),
              next_hint ? next_hint : "",
              source_info ? source_info : "");
 

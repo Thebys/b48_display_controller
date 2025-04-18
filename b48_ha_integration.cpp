@@ -38,6 +38,10 @@ void B48HAIntegration::register_services_() {
 
   // Register service for dumping database diagnostics
   register_service(&B48HAIntegration::handle_dump_database_service_, "dump_messages_for_diagnostics");
+  
+  // Register services for time test mode
+  register_service(&B48HAIntegration::handle_start_time_test_service_, "start_time_test");
+  register_service(&B48HAIntegration::handle_stop_time_test_service_, "stop_time_test");
 
   ESP_LOGD(TAG, "Service registration complete.");
 }
@@ -83,6 +87,38 @@ void B48HAIntegration::handle_dump_database_service_() {
     parent_->dump_database_for_diagnostics();
   } else {
     ESP_LOGE(TAG, "Cannot dump database - parent controller not available.");
+  }
+}
+
+// --- New Time Test Service Handlers ---
+
+void B48HAIntegration::handle_start_time_test_service_() {
+  ESP_LOGI(TAG, "Service start_time_test called. Starting time test mode...");
+  
+  if (parent_) {
+    if (parent_->is_time_test_mode_active()) {
+      ESP_LOGW(TAG, "Time test mode is already active");
+      return;
+    }
+    parent_->start_time_test_mode();
+    ESP_LOGI(TAG, "Time test mode started via HA service");
+  } else {
+    ESP_LOGE(TAG, "Cannot start time test mode - parent controller not available");
+  }
+}
+
+void B48HAIntegration::handle_stop_time_test_service_() {
+  ESP_LOGI(TAG, "Service stop_time_test called. Stopping time test mode...");
+  
+  if (parent_) {
+    if (!parent_->is_time_test_mode_active()) {
+      ESP_LOGW(TAG, "Time test mode is not active");
+      return;
+    }
+    parent_->stop_time_test_mode();
+    ESP_LOGI(TAG, "Time test mode stopped via HA service");
+  } else {
+    ESP_LOGE(TAG, "Cannot stop time test mode - parent controller not available");
   }
 }
 

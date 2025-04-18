@@ -12,7 +12,8 @@
 #include <mutex>
 
 #include <sqlite3.h>
-#include <Arduino.h>
+#include <Arduino.h>       // For delay() and yield()
+#include <esp_task_wdt.h>  // For esp_task_wdt_reset()
 #include <LittleFS.h>
 
 namespace esphome {
@@ -164,6 +165,9 @@ void B48DisplayController::loop() {
     case DISPLAY_MESSAGE:
       run_display_message();
       break;
+    case TIME_TEST_MODE:
+      run_time_test_mode(); // Handle the new time test mode state
+      break;
   }
 
   // Periodically check for expired messages (every 60 seconds)
@@ -193,6 +197,8 @@ void B48DisplayController::dump_config() {
   if (this->display_enable_pin_ >= 0) {
       ESP_LOGCONFIG(TAG, "  Display Enable Pin: GPIO%d", this->display_enable_pin_);
   }
+  ESP_LOGCONFIG(TAG, "  Time Test Mode: Available via HA service");
+  ESP_LOGCONFIG(TAG, "  Time Test Status: %s", this->time_test_mode_active_ ? "Active" : "Inactive");
 
   // Log cache info
   std::lock_guard<std::mutex> lock(this->message_mutex_);
@@ -217,8 +223,11 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
     // Determine if the message is ephemeral or persistent based on duration
     if (duration_seconds > 0 && duration_seconds < EPHEMERAL_DURATION_THRESHOLD_SECONDS) {
         // --- Handle Ephemeral Message (Not saved to DB) ---
-        ESP_LOGD(TAG, "Adding ephemeral message (duration %ds < %ds): %s", 
-                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, scrolling_message.substr(0, 30).c_str());
+        ESP_LOGD(TAG, "Adding ephemeral message (duration %ds < %ds): %s%s (len=%zu)", 
+                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, 
+                 scrolling_message.substr(0, 30).c_str(), 
+                 scrolling_message.length() > 30 ? "..." : "",
+                 scrolling_message.length());
 
         auto msg = std::make_shared<MessageEntry>();
         msg->message_id = -1; // Ephemeral messages don't have a DB ID
@@ -240,8 +249,11 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
 
     } else {
         // --- Handle Persistent Message (Saved to DB) ---
-        ESP_LOGD(TAG, "Adding persistent message (duration %ds >= %ds or <= 0): %s", 
-                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, scrolling_message.substr(0, 30).c_str());
+        ESP_LOGD(TAG, "Adding persistent message (duration %ds >= %ds or <= 0): %s%s (len=%zu)", 
+                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, 
+                 scrolling_message.substr(0, 30).c_str(),
+                 scrolling_message.length() > 30 ? "..." : "",
+                 scrolling_message.length());
 
         if (!this->db_manager_) {
             ESP_LOGE(TAG, "Database manager is not initialized for add_message (persistent)");
@@ -290,7 +302,11 @@ bool B48DisplayController::update_message(int message_id, int priority, bool is_
     return false;
   }
 
-  ESP_LOGD(TAG, "Updating persistent message with ID %d: %s", message_id, scrolling_message.substr(0, 30).c_str());
+  ESP_LOGD(TAG, "Updating persistent message with ID %d: %s%s (len=%zu)", 
+          message_id, 
+          scrolling_message.substr(0, 30).c_str(),
+          scrolling_message.length() > 30 ? "..." : "",
+          scrolling_message.length());
 
   // Call the database manager to update the message
   bool success = this->db_manager_->update_persistent_message(
@@ -412,9 +428,11 @@ bool B48DisplayController::refresh_message_cache() {
   // Log detailed information about each message for debugging
   for (size_t i = 0; i < this->persistent_messages_.size(); i++) {
     const auto& msg = this->persistent_messages_[i];
-    ESP_LOGD(TAG, "Message[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s'", 
+    ESP_LOGD(TAG, "Message[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s%s' (len=%zu)", 
              i, msg->message_id, msg->priority, msg->line_number, msg->tarif_zone, 
-             msg->scrolling_message.substr(0, 30).c_str());
+             msg->scrolling_message.substr(0, 30).c_str(),
+             msg->scrolling_message.length() > 30 ? "..." : "",
+             msg->scrolling_message.length());
   }
 
   // Sort persistent messages by priority (DESC) and then ID (ASC) - DB query already does this
@@ -646,8 +664,11 @@ void B48DisplayController::send_commands_for_message(const std::shared_ptr<Messa
         ESP_LOGW(TAG, "send_commands_for_message called with null message");
         return;
     }
-    ESP_LOGD(TAG, "Sending commands for message (Prio: %d, ID: %d, Ephem: %d)",
-             msg->priority, msg->message_id, msg->is_ephemeral);
+    ESP_LOGD(TAG, "Sending commands for message (Prio: %d, ID: %d, Ephem: %d): %s%s (len=%zu)",
+             msg->priority, msg->message_id, msg->is_ephemeral,
+             msg->scrolling_message.substr(0, 30).c_str(),
+             msg->scrolling_message.length() > 30 ? "..." : "",
+             msg->scrolling_message.length());
 
     // Example sequence based on MessageEntry fields
     send_line_number(msg->line_number);
@@ -744,10 +765,113 @@ void B48DisplayController::dump_database_for_diagnostics() {
     ESP_LOGI(TAG, "Current message cache state: %d persistent messages in cache", this->persistent_messages_.size());
     for (size_t i = 0; i < this->persistent_messages_.size(); i++) {
       const auto& msg = this->persistent_messages_[i];
-      ESP_LOGI(TAG, "Cache[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s'", 
+      ESP_LOGI(TAG, "Cache[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s%s' (len=%zu)", 
                i, msg->message_id, msg->priority, msg->line_number, msg->tarif_zone, 
-               msg->scrolling_message.c_str());
+               msg->scrolling_message.substr(0, 30).c_str(),
+               msg->scrolling_message.length() > 30 ? "..." : "",
+               msg->scrolling_message.length());
     }
+  }
+}
+
+// Add the time test mode methods:
+
+void B48DisplayController::start_time_test_mode() {
+  if (this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode already active");
+    return;
+  }
+  
+  ESP_LOGI(TAG, "Starting time test mode");
+  this->time_test_mode_active_ = true;
+  this->current_time_test_value_ = 0;
+  this->last_time_test_update_ = millis();
+  this->state_ = TIME_TEST_MODE;
+  this->state_change_time_ = millis();
+  
+  // Send intro message
+  auto test_msg = std::make_shared<MessageEntry>();
+  test_msg->message_id = -1;
+  test_msg->line_number = 99;
+  test_msg->tarif_zone = 999;
+  test_msg->static_intro = "Time Test";
+  test_msg->scrolling_message = "Testing time values from u0000 to u2459";
+  test_msg->next_message_hint = "Testing";
+  test_msg->priority = 100;
+  send_commands_for_message(test_msg);
+  
+  // Prepare for first time value
+  switch_to_cycle(6); // Make sure we're in the main cycle
+}
+
+void B48DisplayController::stop_time_test_mode() {
+  if (!this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode not active");
+    return;
+  }
+  
+  ESP_LOGI(TAG, "Stopping time test mode");
+  this->time_test_mode_active_ = false;
+  
+  // Return to normal operation
+  this->state_ = TRANSITION_MODE;
+  this->state_change_time_ = millis();
+  
+  // Send completion message
+  auto completion_msg = std::make_shared<MessageEntry>();
+  completion_msg->message_id = -1;
+  completion_msg->line_number = 48;
+  completion_msg->tarif_zone = 0;
+  completion_msg->static_intro = "Test Done";
+  completion_msg->scrolling_message = "Time test complete. Returning to normal operation.";
+  completion_msg->next_message_hint = "Normal";
+  completion_msg->priority = 100;
+  send_commands_for_message(completion_msg);
+}
+
+void B48DisplayController::run_time_test_mode() {
+  // Check if we should stop the test
+  if (!this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode flag is false, stopping");
+    this->state_ = TRANSITION_MODE;
+    this->state_change_time_ = millis();
+    return;
+  }
+  
+  // Check if we completed all time values
+  if (this->current_time_test_value_ > 2459) {
+    ESP_LOGI(TAG, "Time test complete, all values sent");
+    stop_time_test_mode();
+    return;
+  }
+  
+  // Send time update at regular intervals
+  unsigned long now = millis();
+  if (now - this->last_time_test_update_ >= TIME_TEST_INTERVAL_MS) {
+    // Calculate current time value (hour and minute)
+    int hour = this->current_time_test_value_ / 100;
+    int minute = this->current_time_test_value_ % 100;
+    
+    // Log the test progress periodically
+    if (this->current_time_test_value_ % 100 == 0) {
+      ESP_LOGI(TAG, "Time test progress: u%04d", this->current_time_test_value_);
+    } else {
+      ESP_LOGD(TAG, "Time test: u%04d", this->current_time_test_value_);
+    }
+    
+    // Send the time value directly
+    this->serial_protocol_.send_time_update(hour, minute);
+    switch_to_cycle(0);
+    switch_to_cycle(6);
+    yield();
+    esp_task_wdt_reset();
+    
+    
+    // Increment the value for next iteration
+    this->current_time_test_value_++;
+    
+    // Update the last update time
+    this->last_time_test_update_ = now;
   }
 }
 }  // namespace b48_display_controller
