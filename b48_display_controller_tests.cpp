@@ -1,11 +1,13 @@
 #include "b48_display_controller.h"
 #include "esphome/core/log.h"
-#include <stdexcept> // Include for std::exception
-#include <functional> // Include for std::function if needed, but pointer works
-#include <LittleFS.h> // Include LittleFS header
-#include <sqlite3.h> // Include SQLite3 header
-#include <vector>    // Include for std::vector
-#include <string>    // Include for std::string
+#include <stdexcept>        // Include for std::exception
+#include <functional>       // Include for std::function if needed, but pointer works
+#include <LittleFS.h>       // Include LittleFS header
+#include <sqlite3.h>        // Include SQLite3 header
+#include <vector>           // Include for std::vector
+#include <string>           // Include for std::string
+#include <Arduino.h>        // For delay() and yield()
+#include <esp_task_wdt.h>   // For esp_task_wdt_reset()
 
 namespace esphome {
 namespace b48_display_controller {
@@ -315,6 +317,108 @@ bool B48DisplayController::testSerialProtocol() {
         return false;
     }
 }
+
+// Add the time test mode methods:
+
+void B48DisplayController::start_time_test_mode() {
+  if (this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode already active");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Starting time test mode");
+  this->time_test_mode_active_ = true;
+  this->current_time_test_value_ = 0;
+  this->last_time_test_update_ = millis();
+  this->state_ = TIME_TEST_MODE;
+  this->state_change_time_ = millis();
+
+  // Send intro message
+  auto test_msg = std::make_shared<MessageEntry>();
+  test_msg->message_id = -1;
+  test_msg->line_number = 99;
+  test_msg->tarif_zone = 999;
+  test_msg->static_intro = "Time Test";
+  test_msg->scrolling_message = "Testing time values from u0000 to u2459";
+  test_msg->next_message_hint = "Testing";
+  test_msg->priority = 100;
+  send_commands_for_message(test_msg);
+
+  // Prepare for first time value
+  switch_to_cycle(6);  // Make sure we're in the main cycle
+}
+
+void B48DisplayController::stop_time_test_mode() {
+  if (!this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode not active");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Stopping time test mode");
+  this->time_test_mode_active_ = false;
+
+  // Return to normal operation
+  this->state_ = TRANSITION_MODE;
+  this->state_change_time_ = millis();
+
+  // Send completion message
+  auto completion_msg = std::make_shared<MessageEntry>();
+  completion_msg->message_id = -1;
+  completion_msg->line_number = 48;
+  completion_msg->tarif_zone = 0;
+  completion_msg->static_intro = "Test Done";
+  completion_msg->scrolling_message = "Time test complete. Returning to normal operation.";
+  completion_msg->next_message_hint = "Normal";
+  completion_msg->priority = 100;
+  send_commands_for_message(completion_msg);
+}
+
+void B48DisplayController::run_time_test_mode() {
+  // Check if we should stop the test
+  if (!this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode flag is false, stopping");
+    this->state_ = TRANSITION_MODE;
+    this->state_change_time_ = millis();
+    return;
+  }
+
+  // Check if we completed all time values
+  if (this->current_time_test_value_ > 2459) {
+    ESP_LOGI(TAG, "Time test complete, all values sent");
+    stop_time_test_mode();
+    return;
+  }
+
+  // Send time update at regular intervals
+  unsigned long now = millis();
+  if (now - this->last_time_test_update_ >= TIME_TEST_INTERVAL_MS) {
+    // Calculate current time value (hour and minute)
+    int hour = this->current_time_test_value_ / 100;
+    int minute = this->current_time_test_value_ % 100;
+
+    // Log the test progress periodically
+    if (this->current_time_test_value_ % 100 == 0) {
+      ESP_LOGI(TAG, "Time test progress: u%04d", this->current_time_test_value_);
+    } else {
+      ESP_LOGD(TAG, "Time test: u%04d", this->current_time_test_value_);
+    }
+
+    // Send the time value directly
+    this->serial_protocol_.send_time_update(hour, minute);
+    switch_to_cycle(0);
+    switch_to_cycle(6);
+    yield();
+    esp_task_wdt_reset();
+
+    // Increment the value for next iteration
+    this->current_time_test_value_++;
+
+    // Update the last update time
+    this->last_time_test_update_ = now;
+  }
+}
+
+
 
 // --- Add implementations for other test methods here ---
 // bool B48DisplayController::testDatabaseConnection() {

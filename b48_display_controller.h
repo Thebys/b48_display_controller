@@ -173,7 +173,7 @@ class B48DisplayController : public Component {
   uart::UARTComponent *uart_{nullptr};
   std::string database_path_;
   int transition_duration_{4};
-  int time_sync_interval_{60};
+  int time_sync_interval_{10};
   int emergency_priority_threshold_{95};
   int min_seconds_between_repeats_{30};
   bool run_tests_on_startup_{false};

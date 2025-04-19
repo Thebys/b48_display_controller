@@ -129,8 +129,8 @@ void B48DisplayController::setup() {
 void B48DisplayController::loop() {
   // Update current time using standard C time
   this->current_time_ = time(nullptr);
-  // Log if time seems invalid (before 2021)
-  if (this->current_time_ < 1609459200 && this->current_time_ != 0) {
+  // Log if time seems invalid (before 2025)
+  if (this->current_time_ < 1745000000 && this->current_time_ != 0) {
     ESP_LOGV(TAG, "System time might not be synchronized yet (%ld)", (long) this->current_time_);
   }
 
@@ -153,9 +153,9 @@ void B48DisplayController::loop() {
       break;
   }
 
-  // Periodically check for expired messages (every 60 seconds)
+  // Periodically check for expired messages (every 300 seconds)
   static unsigned long last_expiry_check = 0;
-  if (millis() - last_expiry_check > 60000) {
+  if (millis() - last_expiry_check > 300*1000) {
     check_expired_messages();
     last_expiry_check = millis();
   }
@@ -531,8 +531,8 @@ int B48DisplayController::calculate_display_duration(const std::shared_ptr<Messa
   if (!msg)
     return 5;  // Default duration if msg is null
 
-  int base_duration = 5;     // Base seconds
-  int chars_per_second = 5;  // Estimated scroll speed
+  int base_duration = 10;     // Base seconds
+  int chars_per_second = 3;  // Estimated scroll speed
   int length_duration = msg->scrolling_message.length() / chars_per_second;
 
   // Use a simple heuristic: longer messages display for longer, up to a max
@@ -586,10 +586,6 @@ void B48DisplayController::send_next_message_hint(const std::string &text) {
 void B48DisplayController::send_time_update() {
   // Ensure current_time_ is updated
   if (this->current_time_ == 0) {
-    // If we don't have a valid time, maybe try to get it now?
-    // Or simply skip? For now, skipping.
-    // ESP_LOGW(TAG, "Cannot send time update, current time unknown.");
-    // return;
     // Let's get the current time if not set
     time(&this->current_time_);
   }
@@ -622,24 +618,10 @@ void B48DisplayController::send_commands_for_message(const std::shared_ptr<Messa
            msg->scrolling_message.length() > 30 ? "..." : "", msg->scrolling_message.length());
 
   send_line_number(msg->line_number);
-  yield();
-  esp_task_wdt_reset();
-
   send_tarif_zone(msg->tarif_zone);
-  yield();
-  esp_task_wdt_reset();
-
   send_static_intro(msg->static_intro);
-  yield();
-  esp_task_wdt_reset();
-
   send_scrolling_message(msg->scrolling_message);
-  yield();
-  esp_task_wdt_reset();
-
   send_next_message_hint(msg->next_message_hint);
-  yield();
-  esp_task_wdt_reset();
 }
 
 // --- State Machine Methods ---
@@ -648,15 +630,14 @@ void B48DisplayController::run_transition_mode() {
   // Simple transition: wait, then prepare next message
   unsigned long time_in_state = millis() - this->state_change_time_;
   if (time_in_state >= (unsigned long) this->transition_duration_ * 1000) {
-    ESP_LOGV(TAG, "Transition complete, moving to MESSAGE_PREPARATION");
+    ESP_LOGD(TAG, "Transition complete, moving to MESSAGE_PREPARATION");
     this->state_ = MESSAGE_PREPARATION;
     this->state_change_time_ = millis();
-    // Optionally send a blanking command or next_message_hint here
   }
 }
 
 void B48DisplayController::run_message_preparation() {
-  ESP_LOGV(TAG, "Preparing next message...");
+  ESP_LOGD(TAG, "Preparing next message...");
   this->current_message_ = select_next_message();
 
   if (this->current_message_) {
@@ -685,7 +666,6 @@ void B48DisplayController::run_display_message() {
     this->state_ = TRANSITION_MODE;
     this->state_change_time_ = millis();
   }
-  // Display logic runs implicitly via the sent commands
 }
 
 void B48DisplayController::display_fallback_message() {
@@ -694,10 +674,10 @@ void B48DisplayController::display_fallback_message() {
   fallback_msg->is_ephemeral = true;  // Treat fallback as ephemeral
   fallback_msg->message_id = -1;
   fallback_msg->line_number = 48;
-  fallback_msg->tarif_zone = 0;
+  fallback_msg->tarif_zone = 101;
   fallback_msg->static_intro = "Base48";
-  fallback_msg->scrolling_message = "--.-";  // Placeholder/Idle message
-  fallback_msg->next_message_hint = "Idle";
+  fallback_msg->scrolling_message = "This is fallback message. Something is wrong.";  // Placeholder/Idle message
+  fallback_msg->next_message_hint = "0xDEADBEEF__";
   fallback_msg->priority = 0;  // Low priority
 
   ESP_LOGD(TAG, "Displaying fallback message.");
@@ -732,106 +712,6 @@ void B48DisplayController::dump_database_for_diagnostics() {
                msg->priority, msg->line_number, msg->tarif_zone, msg->scrolling_message.substr(0, 30).c_str(),
                msg->scrolling_message.length() > 30 ? "..." : "", msg->scrolling_message.length());
     }
-  }
-}
-
-// Add the time test mode methods:
-
-void B48DisplayController::start_time_test_mode() {
-  if (this->time_test_mode_active_) {
-    ESP_LOGW(TAG, "Time test mode already active");
-    return;
-  }
-
-  ESP_LOGI(TAG, "Starting time test mode");
-  this->time_test_mode_active_ = true;
-  this->current_time_test_value_ = 0;
-  this->last_time_test_update_ = millis();
-  this->state_ = TIME_TEST_MODE;
-  this->state_change_time_ = millis();
-
-  // Send intro message
-  auto test_msg = std::make_shared<MessageEntry>();
-  test_msg->message_id = -1;
-  test_msg->line_number = 99;
-  test_msg->tarif_zone = 999;
-  test_msg->static_intro = "Time Test";
-  test_msg->scrolling_message = "Testing time values from u0000 to u2459";
-  test_msg->next_message_hint = "Testing";
-  test_msg->priority = 100;
-  send_commands_for_message(test_msg);
-
-  // Prepare for first time value
-  switch_to_cycle(6);  // Make sure we're in the main cycle
-}
-
-void B48DisplayController::stop_time_test_mode() {
-  if (!this->time_test_mode_active_) {
-    ESP_LOGW(TAG, "Time test mode not active");
-    return;
-  }
-
-  ESP_LOGI(TAG, "Stopping time test mode");
-  this->time_test_mode_active_ = false;
-
-  // Return to normal operation
-  this->state_ = TRANSITION_MODE;
-  this->state_change_time_ = millis();
-
-  // Send completion message
-  auto completion_msg = std::make_shared<MessageEntry>();
-  completion_msg->message_id = -1;
-  completion_msg->line_number = 48;
-  completion_msg->tarif_zone = 0;
-  completion_msg->static_intro = "Test Done";
-  completion_msg->scrolling_message = "Time test complete. Returning to normal operation.";
-  completion_msg->next_message_hint = "Normal";
-  completion_msg->priority = 100;
-  send_commands_for_message(completion_msg);
-}
-
-void B48DisplayController::run_time_test_mode() {
-  // Check if we should stop the test
-  if (!this->time_test_mode_active_) {
-    ESP_LOGW(TAG, "Time test mode flag is false, stopping");
-    this->state_ = TRANSITION_MODE;
-    this->state_change_time_ = millis();
-    return;
-  }
-
-  // Check if we completed all time values
-  if (this->current_time_test_value_ > 2459) {
-    ESP_LOGI(TAG, "Time test complete, all values sent");
-    stop_time_test_mode();
-    return;
-  }
-
-  // Send time update at regular intervals
-  unsigned long now = millis();
-  if (now - this->last_time_test_update_ >= TIME_TEST_INTERVAL_MS) {
-    // Calculate current time value (hour and minute)
-    int hour = this->current_time_test_value_ / 100;
-    int minute = this->current_time_test_value_ % 100;
-
-    // Log the test progress periodically
-    if (this->current_time_test_value_ % 100 == 0) {
-      ESP_LOGI(TAG, "Time test progress: u%04d", this->current_time_test_value_);
-    } else {
-      ESP_LOGD(TAG, "Time test: u%04d", this->current_time_test_value_);
-    }
-
-    // Send the time value directly
-    this->serial_protocol_.send_time_update(hour, minute);
-    switch_to_cycle(0);
-    switch_to_cycle(6);
-    yield();
-    esp_task_wdt_reset();
-
-    // Increment the value for next iteration
-    this->current_time_test_value_++;
-
-    // Update the last update time
-    this->last_time_test_update_ = now;
   }
 }
 
