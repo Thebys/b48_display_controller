@@ -570,10 +570,12 @@ bool B48DatabaseManager::bootstrap_default_messages() {
       // Priority, Line number, Tarif zone, Destination, Scroll message, Next message hint, Duration, Source info
       {40, 48, 101, "Base48", "Podporuj svuj mistni hackerspace! Podporuj Base48.", "Loading", 0, "SQLiteBootstrap"},
       {40, 48, 101, "Base48", "Support your local hackerspace! Support Base48.", "Loading", 0, "SQLiteBootstrap"},
-      {40, 48, 621, "Barbecue", "Barbecue v Base48 kazdy patek. Hackeri a pratele vitani.", "Loading", 0, "SQLiteBootstrap"},
-      {40, 48, 621, "Barbecue", "Barbecue at Base48 every Friday. Hackers and friends grilling.", "Loading", 0, "SQLiteBootstrap"},
-      {38, 48, 48, "Uklid", "Udrzujte poradek a cistotu, uklizejte na stolech.", "Cleaning", 0, "SQLiteBootstrap"},
-      {38, 48, 48, "Cleanup", "Maintain order and cleanliness, clean the tables.", "Cleaning", 0, "SQLiteBootstrap"},
+      {36, 48, 101, "Grilovacka", "Grilovacka v Base48 kazdy patek. . . Hackeri a pratele vitani !", "Loading", 0, "SQLiteBootstrap"},
+      {36, 48, 101, "Barbecue", "Barbecue at Base48 every Friday. Food, hackers, friends, music, chill.", "Loading", 0, "SQLiteBootstrap"},
+      {38, 48, 101, "Uklid", "Udrzujte poradek a cistotu, uklizejte na stolech.", "Cleaning", 0, "SQLiteBootstrap"},
+      {38, 48, 101, "Cleanup", "Maintain order and cleanliness, clean the tables.", "Cleaning", 0, "SQLiteBootstrap"},
+      {34, 48, 101, "Tech Stack", "Running ESPHome on o. g. ESP32. Messages saved in SQLite on LittleFS. Filesystem Partition 512 KB. Exposes interface to Home Assistant. ASCII messages and DPMB 2005 Firmware.", "UART2_TX_OVERF", 0, "SQLiteBootstrap"},
+      {34, 48, 101, "Credits", "Panel and research - Filip. Serial IBIS protocol research by pavlik.space. Initial HW assistance by Vega (vega76.cz). ESP - ESPHome - HA software is C++ vibecoded by Thebys. ", "GOTO 0xBEEF", 0, "SQLiteBootstrap"},
       // Additional messages can be added here in the future
   };
 
