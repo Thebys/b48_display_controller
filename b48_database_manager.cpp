@@ -271,9 +271,9 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
   // Continue using the safe (ASCII) versions in the query
   const char *query = R"SQL(
     INSERT INTO messages (
-      priority, line_number, tarif_zone, static_intro, scrolling_message, 
+      is_enabled, priority, line_number, tarif_zone, static_intro, scrolling_message, 
       next_message_hint, datetime_added, duration_seconds, source_info
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
   )SQL";
 
   sqlite3_stmt *stmt;
@@ -287,29 +287,30 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
   esp_task_wdt_reset();  // Reset watchdog timer
 
   // Bind parameters with the safe ASCII versions
-  sqlite3_bind_int(stmt, 1, priority);
-  sqlite3_bind_int(stmt, 2, line_number);
-  sqlite3_bind_int(stmt, 3, tarif_zone);
-  sqlite3_bind_text(stmt, 4, safe_static_intro.c_str(), -1, SQLITE_STATIC);
-  sqlite3_bind_text(stmt, 5, safe_scrolling_message.c_str(), -1, SQLITE_STATIC);
-  sqlite3_bind_text(stmt, 6, safe_next_message_hint.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_int(stmt, 1, 1);
+  sqlite3_bind_int(stmt, 2, priority);
+  sqlite3_bind_int(stmt, 3, line_number);
+  sqlite3_bind_int(stmt, 4, tarif_zone);
+  sqlite3_bind_text(stmt, 5, safe_static_intro.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt, 6, safe_scrolling_message.c_str(), -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt, 7, safe_next_message_hint.c_str(), -1, SQLITE_STATIC);
   
   // Get current time (timestamp) and log it for debugging
   time_t now = time(nullptr);
   ESP_LOGI(TAG, "Current timestamp: %lld", (long long)now);
-  sqlite3_bind_int64(stmt, 7, now);
+  sqlite3_bind_int64(stmt, 8, now);
 
   if (duration_seconds > 0) {
     ESP_LOGI(TAG, "Message will expire at timestamp: %lld", (long long)(now + duration_seconds));
-    sqlite3_bind_int(stmt, 8, duration_seconds);
+    sqlite3_bind_int(stmt, 9, duration_seconds);
   } else {
-    sqlite3_bind_null(stmt, 8);
+    sqlite3_bind_null(stmt, 9);
   }
 
   if (!safe_source_info.empty()) {
-    sqlite3_bind_text(stmt, 9, safe_source_info.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 10, safe_source_info.c_str(), -1, SQLITE_STATIC);
   } else {
-    sqlite3_bind_null(stmt, 9);
+    sqlite3_bind_null(stmt, 10);
   }
 
   yield();  // Allow watchdog to reset after binding params
@@ -420,144 +421,131 @@ bool B48DatabaseManager::delete_persistent_message(int message_id) {
 
 std::vector<std::shared_ptr<MessageEntry>> B48DatabaseManager::get_active_persistent_messages() {
   std::vector<std::shared_ptr<MessageEntry>> messages;
-
-  ESP_LOGD(TAG, "[STEP 1] Starting get_active_persistent_messages");
-  
-  // Prepare the query to get all active messages
+  // Filter active (enabled and not expired) messages using SQL
+  time_t now_ts = time(nullptr);
+  ESP_LOGD(TAG, "Filtering active messages with timestamp: %lld", (long long)now_ts);
   const char *query = R"SQL(
-    SELECT message_id, priority, line_number, tarif_zone, static_intro, 
+    SELECT message_id, priority, line_number, tarif_zone, static_intro,
            scrolling_message, next_message_hint, datetime_added, duration_seconds
     FROM messages
-    WHERE
-      is_enabled = 1
+    WHERE is_enabled = 1
       AND (
         duration_seconds IS NULL
-        OR (datetime_added + duration_seconds) > strftime('%s', 'now')
+        OR duration_seconds = 0
+        OR (datetime_added + duration_seconds) > ?
       )
-    ORDER BY
-      priority DESC,
-      message_id ASC;
+    ORDER BY priority DESC, message_id ASC
   )SQL";
 
-  ESP_LOGD(TAG, "[STEP 2] Executing query to get active messages");
-  esp_task_wdt_reset();  // Reset watchdog timer before query
-  
-  sqlite3_stmt *stmt;
+  esp_task_wdt_reset();
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
-  ESP_LOGD(TAG, "[STEP 3] Prepare statement result: %d", rc);
-  
   if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "Failed to prepare statement: %s", sqlite3_errmsg(this->db_));
-    return messages;  // Return empty vector
+    ESP_LOGE(TAG, "Failed to prepare get_active_persistent_messages statement: %s", sqlite3_errmsg(this->db_));
+    return messages;
   }
+  ESP_LOGI(TAG, "Now_ts (epoch): %lld", (long long) now_ts);
+  sqlite3_bind_int64(stmt, 1, now_ts);
+  ESP_LOGI(TAG, "Expanded SQL: %s", sqlite3_expanded_sql(stmt));
 
-  // Fetch and process each row
   int count = 0;
-  ESP_LOGD(TAG, "[STEP 4] Starting to fetch messages from database");
-  esp_task_wdt_reset();  // Reset watchdog timer before fetching rows
+  ESP_LOGD(TAG, "Starting to fetch messages from database");
   
   int step_result;
-  int step_count = 0;
-  unsigned long step_start_time = millis();
   while ((step_result = sqlite3_step(stmt)) == SQLITE_ROW) {
-    step_count++;
-    unsigned long current_step_time = millis() - step_start_time;
-    if (step_count == 1 || step_count % 5 == 0) {
-      ESP_LOGD(TAG, "[STEP 5] Processing row %d (step took %lu ms)", 
-               count+1, current_step_time);
-      step_start_time = millis(); // Reset timer for next batch
-    }
-    esp_task_wdt_reset();  // Reset watchdog timer for each row
-    
+    esp_task_wdt_reset();
+    yield();
     auto entry = std::make_shared<MessageEntry>();
-
     entry->is_ephemeral = false;
     entry->message_id = sqlite3_column_int(stmt, 0);
     entry->priority = sqlite3_column_int(stmt, 1);
     entry->line_number = sqlite3_column_int(stmt, 2);
     entry->tarif_zone = sqlite3_column_int(stmt, 3);
-
     const char *static_intro = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4));
-    if (static_intro)
-      entry->static_intro = static_intro;
-
+    if (static_intro) entry->static_intro = static_intro;
     const char *scrolling_message = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 5));
-    if (scrolling_message)
-      entry->scrolling_message = scrolling_message;
-
+    if (scrolling_message) entry->scrolling_message = scrolling_message;
     const char *next_hint = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 6));
-    if (next_hint)
-      entry->next_message_hint = next_hint;
-
+    if (next_hint) entry->next_message_hint = next_hint;
     time_t added_time = static_cast<time_t>(sqlite3_column_int64(stmt, 7));
     int duration_seconds = sqlite3_column_type(stmt, 8) == SQLITE_NULL ? 0 : sqlite3_column_int(stmt, 8);
-
-    entry->last_display_time = 0;  // Never displayed yet
-
-    // Calculate expiry time if duration is set
-    if (duration_seconds > 0) {
-      entry->expiry_time = added_time + duration_seconds;
-    }
-    
-    ESP_LOGD(TAG, "Loaded message ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s%s' (len=%zu)", 
-             entry->message_id, entry->priority, entry->line_number, entry->tarif_zone,
-             entry->scrolling_message.substr(0, 30).c_str(), 
-             entry->scrolling_message.length() > 30 ? "..." : "",
-             entry->scrolling_message.length());
-
+    if (duration_seconds > 0) entry->expiry_time = added_time + duration_seconds;
+    ESP_LOGD(TAG, "Loaded message ID=%d, Priority=%d, Duration=%d", entry->message_id,
+             entry->priority, duration_seconds);
     messages.push_back(entry);
     count++;
-    
-    // Reset watchdog timer periodically during long operations
-    if (count % 5 == 0) {
-      yield();
-      esp_task_wdt_reset();
-    }
   }
-
-  ESP_LOGD(TAG, "[STEP 6] Finished loop with step_result=%d (SQLITE_DONE=%d)", 
-           step_result, SQLITE_DONE);
-  
-  // Properly handle non-SQLITE_DONE result
   if (step_result != SQLITE_DONE) {
-    ESP_LOGE(TAG, "SQLite step error: %s", sqlite3_errmsg(this->db_));
+    ESP_LOGE(TAG, "SQLite error in get_active_persistent_messages: %s", sqlite3_errmsg(this->db_));
   }
-
-  ESP_LOGD(TAG, "[STEP 7] About to finalize statement");
   sqlite3_finalize(stmt);
-  
-  ESP_LOGD(TAG, "[STEP 8] Statement finalized");
-  esp_task_wdt_reset();  // Final watchdog reset after fetching all rows
-  
+  esp_task_wdt_reset();
   ESP_LOGI(TAG, "Loaded %d messages from database", count);
-
   return messages;
 }
 
+// Expire messages whose duration has elapsed and log detailed info
 int B48DatabaseManager::expire_old_messages() {
-  const char *query = R"SQL(
+  ESP_LOGI(TAG, "Expiring old messages");
+  time_t now_ts = time(nullptr);
+  ESP_LOGD(TAG, "Current timestamp for expiry check: %lld", (long long)now_ts);
+
+  // First, select messages that are due to expire
+  const char *select_sql = R"SQL(
+    SELECT message_id, datetime_added, duration_seconds
+    FROM messages
+    WHERE is_enabled = 1
+      AND duration_seconds IS NOT NULL
+      AND duration_seconds > 0
+      AND (datetime_added + duration_seconds) <= ?
+  )SQL";
+  sqlite3_stmt *sel_stmt = nullptr;
+  int rc = sqlite3_prepare_v2(this->db_, select_sql, -1, &sel_stmt, nullptr);
+  if (rc == SQLITE_OK) {
+    sqlite3_bind_int64(sel_stmt, 1, now_ts);
+    while ((rc = sqlite3_step(sel_stmt)) == SQLITE_ROW) {
+      int msg_id = sqlite3_column_int(sel_stmt, 0);
+      long long added = sqlite3_column_int64(sel_stmt, 1);
+      int dur = sqlite3_column_int(sel_stmt, 2);
+      long long expiry_ts = added + dur;
+      ESP_LOGW(TAG, "Message ID %d will expire: added_ts=%lld, duration=%d, expiry_ts=%lld", msg_id, added, dur, expiry_ts);
+    }
+    sqlite3_finalize(sel_stmt);
+  } else {
+    ESP_LOGE(TAG, "Failed to prepare select expire list: %s", sqlite3_errmsg(this->db_));
+  }
+
+  // Now perform the update to mark expired messages as disabled
+  const char *update_sql = R"SQL(
     UPDATE messages
     SET is_enabled = 0
-    WHERE
-      is_enabled = 1
+    WHERE is_enabled = 1
       AND duration_seconds IS NOT NULL
-      AND (datetime_added + duration_seconds) <= strftime('%s', 'now');
+      AND duration_seconds > 0
+      AND (datetime_added + duration_seconds) <= ?
   )SQL";
-
-  char *err_msg = nullptr;
-  int rc = sqlite3_exec(this->db_, query, nullptr, nullptr, &err_msg);
+  sqlite3_stmt *upd_stmt = nullptr;
+  rc = sqlite3_prepare_v2(this->db_, update_sql, -1, &upd_stmt, nullptr);
   if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "SQL error during expiry check: %s", err_msg);
-    sqlite3_free(err_msg);
-    return -1;  // Return -1 to indicate error
+    ESP_LOGE(TAG, "Failed to prepare expire update: %s", sqlite3_errmsg(this->db_));
+    return -1;
   }
+  sqlite3_bind_int64(upd_stmt, 1, now_ts);
+  rc = sqlite3_step(upd_stmt);
+  if (rc != SQLITE_DONE) {
+    ESP_LOGE(TAG, "Failed to execute expire update: %s", sqlite3_errmsg(this->db_));
+    sqlite3_finalize(upd_stmt);
+    return -1;
+  }
+  sqlite3_finalize(upd_stmt);
 
   int changes = sqlite3_changes(this->db_);
   if (changes > 0) {
     ESP_LOGI(TAG, "Expired %d messages", changes);
+  } else {
+    ESP_LOGD(TAG, "No messages expired at this time");
   }
-
-  return changes;  // Return number of expired messages
+  return changes;
 }
 
 // --- Bootstrapping ---
@@ -656,40 +644,38 @@ bool B48DatabaseManager::bootstrap_default_messages() {
 int B48DatabaseManager::get_message_count() {
   if (!this->db_) {
     ESP_LOGE(TAG, "Database connection is not open. Cannot get message count.");
-    return -1; // Return -1 to indicate error
+    return -1;
   }
+  // Get current timestamp for expiry comparison
+  time_t now_ts = time(nullptr);
+  ESP_LOGD(TAG, "get_message_count now_ts: %lld", (long long)now_ts);
 
-  sqlite3_stmt *stmt;
-  // Change query to only count active, non-expired messages
+  // Count only enabled and not-yet-expired messages
   const char *query = R"SQL(
     SELECT COUNT(*) FROM messages
-    WHERE
-      is_enabled = 1
+    WHERE is_enabled = 1
       AND (
         duration_seconds IS NULL
-        OR (datetime_added + duration_seconds) > strftime('%s', 'now')
-      );
+        OR duration_seconds = 0
+        OR (datetime_added + duration_seconds) > ?
+      )
   )SQL";
-  
+  sqlite3_stmt *stmt = nullptr;
   int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
-
   if (rc != SQLITE_OK) {
     ESP_LOGE(TAG, "Failed to prepare count statement: %s", sqlite3_errmsg(this->db_));
-    return -1; // Return -1 to indicate error
+    return -1;
   }
+  sqlite3_bind_int64(stmt, 1, now_ts);
 
-  int count = -1; // Default to error value
+  int count = -1;
   if (sqlite3_step(stmt) == SQLITE_ROW) {
     count = sqlite3_column_int(stmt, 0);
   } else {
     ESP_LOGE(TAG, "Failed to execute count statement: %s", sqlite3_errmsg(this->db_));
   }
-  
-  sqlite3_finalize(stmt); // Finalize the statement
-  
-  if (count != -1) {
-      ESP_LOGD(TAG, "Active message count: %d", count);
-  }
+  sqlite3_finalize(stmt);
+  ESP_LOGD(TAG, "Active message count: %d", count);
   return count;
 }
 
@@ -795,7 +781,7 @@ void B48DatabaseManager::dump_all_messages() {
       }
     }
 
-    ESP_LOGI(TAG, "MSG[%d]: %s, Prio=%d, Line=%d, Zone=%d, Added=%s, Expires=%s", 
+    ESP_LOGI(TAG, "ID [%d]: %s, Prio=%d, Line=%d, Zone=%d, Added=%s, Expires=%s", 
              message_id, is_enabled ? "ENABLED" : "disabled", priority, line_number, tarif_zone,
              time_str, expiry_str);
              

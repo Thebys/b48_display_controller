@@ -195,7 +195,6 @@ void B48DisplayController::dump_config() {
 
 // --- Public Methods Called by HA Integration ---
 
-// Implementation for the unified add_message function
 bool B48DisplayController::add_message(int priority, int line_number, int tarif_zone, const std::string &static_intro,
                                        const std::string &scrolling_message, const std::string &next_message_hint,
                                        int duration_seconds, const std::string &source_info, bool check_duplicates) {
