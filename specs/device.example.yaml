@@ -1,0 +1,137 @@
+esphome:
+  name: espington
+  platformio_options:
+    lib_deps:
+      - FS @ ^2.0.0
+      - LittleFS @ ^2.0.0
+      - siara-cc/Sqlite3Esp32@^2.5
+    build_flags: 
+      - -fexceptions
+      - -std=c++11
+      - -DESP_PLATFORM
+    build_unflags: -fno-exceptions
+    board_build.filesystem: littlefs
+    board_build.partitions: "/esphome/esphome/espington/espington.csv"
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+wifi:
+  ssid:  !secret wifi_ssid
+  password: !secret wifi_password
+  # Use if mDNS is not working for you...
+  #use_address: 10.48.2.126
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+api:
+  encryption:
+    key: !secret ota_key
+  services:
+    # Service to add a message to the display with simple duration-based classification
+    - service: add_display_message
+      variables:
+        priority: int
+        duration: int
+        tarif_zone: int
+        line_number: int
+        intro_text: string
+        message_text: string
+        hint_text: string
+      then:
+        - lambda: |-
+            ESP_LOGI("ha_service", "Adding message: text='%s', priority=%d, line=%d, zone=%d, duration=%d", 
+                    message_text.c_str(), priority, line_number, tarif_zone, duration);
+            
+            // Simplified call to the unified add_message method
+            // The controller handles persistence/expiry based on duration internally.
+            // duration <= 0: permanent message (never expires)
+            // 0 < duration < 600: ephemeral message (displayed briefly, not stored in DB)
+            // duration >= 600: regular message with expiration
+            
+            id(display_controller).add_message(
+              priority, line_number, tarif_zone, 
+              intro_text, message_text, hint_text, 
+              duration, // Pass duration directly
+              "HA Service" // source_info
+            );
+
+# Define services directly in the b48_display_controller component
+
+logger:
+  level: DEBUG  # Change to DEBUG to get more detailed logs
+
+# Add time synchronization
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+    timezone: Europe/Prague
+    on_time_sync:
+      then:
+        - logger.log: "Time synchronized with Home Assistant"
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Prague
+    servers:
+      - 0.pool.ntp.org
+      - 1.pool.ntp.org
+      - 2.pool.ntp.org
+    on_time_sync:
+      then:
+        - logger.log: "Time synchronized with SNTP"
+
+uart:
+  id: uart_bus
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 1200
+  data_bits: 7
+  parity: EVEN
+  stop_bits: 2
+
+external_components:
+  - source: C:\esphome\esphome\components
+    components: [b48_display_controller]
+
+# Add your display controller component
+b48_display_controller:
+  id: display_controller
+  uart_id: uart_bus
+  database_path: "/littlefs/messages.db"
+  transition_duration: 4
+  time_sync_interval: 60
+  emergency_priority_threshold: 95
+  min_seconds_between_repeats: 30
+  run_tests_on_startup: true
+  wipe_database_on_boot: false
+  display_enable_pin: 5
+  message_queue_size_sensor: message_queue_size
+
+sensor:
+  - platform: uptime
+    name: "Espington Uptime"
+  
+  # Add message queue size sensor
+  - platform: template
+    name: "Espington Message Queue Size"
+    id: message_queue_size
+    accuracy_decimals: 0
+    unit_of_measurement: "messages"
+    state_class: "measurement"
+
+# Add Text entities to display the controller status
+text_sensor:
+  - platform: template
+    name: "Last Message"
+    id: last_message
+
+button: # Keep other buttons if they exist
+  - platform: template
+    name: "Dump Database"
+    id: dump_database_button
+    on_press:
+      - lambda: |-
+          id(display_controller).dump_database_for_diagnostics();

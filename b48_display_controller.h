@@ -124,6 +124,13 @@ class B48DisplayController : public Component {
   bool refresh_message_cache();
   void check_expired_messages();
   
+  // Setup helper methods
+  bool initialize_filesystem();
+  bool check_database_prerequisites();
+  bool initialize_database();
+  bool handle_database_wipe();
+  void display_startup_message(bool db_initialized);
+  
   // Display algorithm methods
   std::shared_ptr<MessageEntry> select_next_message();
   int calculate_display_duration(const std::shared_ptr<MessageEntry> &msg);

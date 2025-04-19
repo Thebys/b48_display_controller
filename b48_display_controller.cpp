@@ -15,6 +15,7 @@
 #include <Arduino.h>       // For delay() and yield()
 #include <esp_task_wdt.h>  // For esp_task_wdt_reset()
 #include <LittleFS.h>
+#include <esp_partition.h>  // For esp_partition_find and esp_partition_get
 
 namespace esphome {
 namespace b48_display_controller {
@@ -43,6 +44,7 @@ void B48DisplayController::set_message_queue_size_sensor(sensor::Sensor *sensor)
 
 void B48DisplayController::setup() {
   ESP_LOGCONFIG(TAG, "Setting up B48 Display Controller");
+  ESP_LOGI(TAG, "Database path: '%s'", this->database_path_.empty() ? "(EMPTY)" : this->database_path_.c_str());
 
   // Initialize HA integration if it hasn't been already
   if (!this->ha_integration_) {
@@ -68,79 +70,61 @@ void B48DisplayController::setup() {
     ESP_LOGCONFIG(TAG, "  Display enable pin pulled HIGH");
   }
 
-  // Initialize LittleFS
-  if (!LittleFS.begin(false /*don't format*/, "/littlefs", 10 /*max files*/)) {
-    ESP_LOGW(TAG, "Initial LittleFS mount failed. Trying format=true...");
-    if (!LittleFS.begin(true /*format*/, "/littlefs", 10)) {
-      ESP_LOGE(TAG, "Failed to mount LittleFS even after formatting.");
-      this->mark_failed();
-      return;
-    }
-    ESP_LOGI(TAG, "LittleFS mounted successfully after formatting.");
+  // --- Database Initialization Phase ---
+  bool db_initialized = false;
+  
+  // Setup the HA integration component right away - it doesn't need DB
+  if (this->ha_integration_) {
+    ESP_LOGI(TAG, "Registering HA integration component...");
+    App.register_component(this->ha_integration_.get()); // Register HA integration component
   } else {
-      ESP_LOGI(TAG, "LittleFS mounted successfully.");
+    ESP_LOGW(TAG, "HA integration component not initialized!");
   }
 
-  // Initialize the database manager
-  db_manager_.reset(new B48DatabaseManager(this->database_path_));
-  if (!this->db_manager_->initialize()) {
-    ESP_LOGE(TAG, "Failed to initialize the database manager");
-    this->mark_failed();
-    return;
-  }
-
-  // Wipe the database if configured to do so
-  if (this->wipe_database_on_boot_) {
-    ESP_LOGW(TAG, "Configuration has wipe_database_on_boot enabled. Wiping database...");
-    if (!db_manager_->wipe_database()) {
-      ESP_LOGE(TAG, "Failed to wipe database");
-      // Not a fatal error, continue
-    } else {
-      // Need to recreate schema and bootstrap after wiping
-      if (!db_manager_->initialize()) {
-        ESP_LOGE(TAG, "Failed to reinitialize database after wiping");
-        this->mark_failed();
-        return;
+  // Initialize filesystem first (required for database)
+  bool filesystem_ok = initialize_filesystem();
+  
+  // Only continue with database initialization if filesystem is ready
+  if (filesystem_ok) {
+    // Check if we have enough space and a valid path before proceeding
+    if (check_database_prerequisites()) {
+      // We can try to initialize the database
+      db_initialized = initialize_database();
+      
+      // If the database initialized successfully, check if we need to wipe it
+      if (db_initialized && this->wipe_database_on_boot_) {
+        db_initialized = handle_database_wipe();
+      }
+      
+      // Run self-tests if configured to do so and database is available
+      if (db_initialized && this->run_tests_on_startup_) {
+        this->runSelfTests();
+      }
+      
+      // Load messages from the database if available
+      if (db_initialized) {
+        if (!refresh_message_cache()) {
+          ESP_LOGW(TAG, "Failed to refresh message cache initially - database might be empty");
+          // Not fatal - DB might just be empty
+        }
       }
     }
   }
-
-  // Run self-tests if configured to do so
-  if (this->run_tests_on_startup_) {
-    this->runSelfTests();
-  }
-  // Display loading message
-  auto loading_msg = std::make_shared<MessageEntry>();
-  loading_msg->message_id = -1;
-  loading_msg->line_number = 48;
-  loading_msg->tarif_zone = 101;
-  loading_msg->static_intro = "Loading";
-  loading_msg->scrolling_message = "System initialization in progress...";
-  loading_msg->next_message_hint = "Please wait";
-  loading_msg->priority = 75;
-  send_commands_for_message(loading_msg);
-
-  // Load messages from the database
-  if (!refresh_message_cache()) {
-    ESP_LOGE(TAG, "Failed to refresh message cache initially");
-    // Don't mark failed, maybe DB is just empty?
-  }
-
-  // Setup the HA integration component *after* DB is ready
-  if (this->ha_integration_) {
-      App.register_component(this->ha_integration_.get()); // Register HA integration component
-      // ha_integration_->setup(); // Setup is called by ESPHome scheduler
-  } else {
-      ESP_LOGW(TAG, "HA integration component not initialized!");
-  }
-
+  
+  // Prepare appropriate loading message based on database status
+  display_startup_message(db_initialized);
+  
   // Initial update for HA sensors
   update_ha_queue_size();
 
   // Start with transition mode
   this->state_ = TRANSITION_MODE;
   this->state_change_time_ = millis();
-  ESP_LOGI(TAG, "B48 Display Controller setup complete");
+  
+  // Note: we don't mark the component as failed even without a database
+  // Since it can still work in ephemeral-only mode
+  ESP_LOGI(TAG, "B48 Display Controller setup complete - %s", 
+           db_initialized ? "with database" : "in no-database mode");
 }
 
 void B48DisplayController::loop() {
@@ -250,14 +234,22 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
     } else {
         // --- Handle Persistent Message (Saved to DB) ---
         ESP_LOGD(TAG, "Adding persistent message (duration %ds >= %ds or <= 0): %s%s (len=%zu)", 
-                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, 
-                 scrolling_message.substr(0, 30).c_str(),
-                 scrolling_message.length() > 30 ? "..." : "",
-                 scrolling_message.length());
+                duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, 
+                scrolling_message.substr(0, 30).c_str(),
+                scrolling_message.length() > 30 ? "..." : "",
+                scrolling_message.length());
 
         if (!this->db_manager_) {
-            ESP_LOGE(TAG, "Database manager is not initialized for add_message (persistent)");
-            return false;
+            ESP_LOGW(TAG, "Database manager is not initialized - converting to ephemeral message");
+            
+            // If database is not available, convert to ephemeral message with requested duration
+            // or a default duration if persistent (0 or negative)
+            int ephemeral_duration = (duration_seconds > 0) ? 
+                                    duration_seconds : 
+                                    EPHEMERAL_DURATION_THRESHOLD_SECONDS; // Default 10 min for persistent
+            
+            return add_message(priority, line_number, tarif_zone, static_intro, scrolling_message,
+                              next_message_hint, ephemeral_duration, source_info, false);
         }
 
         // Ensure duration is valid (set to 0 for permanent if > 1 year)
@@ -509,6 +501,9 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
   time_t now = time(nullptr);
   std::shared_ptr<MessageEntry> selected_message = nullptr;
 
+  // If database is not available, don't try to use persistent messages
+  bool has_database = (this->db_manager_ != nullptr);
+
   // 1. Check Ephemeral Messages (highest priority first due to pre-sorting)
   for (const auto& msg : this->ephemeral_messages_) {
       // Basic checks (should already be handled by expiry check, but good for safety)
@@ -525,13 +520,11 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
       break; // Select the highest priority available ephemeral message
   }
 
-  // 2. If no suitable ephemeral message, check Persistent Messages
-  if (!selected_message) {
+  // 2. If no suitable ephemeral message and database is available, check Persistent Messages
+  if (!selected_message && has_database) {
       // Iterate through persistent messages (already sorted by priority DESC, id ASC)
       // Find the next message to display, considering rotation and min repeat interval
-      // This part needs careful implementation to cycle through messages fairly.
-
-      // Simple round-robin for now within priorities (needs improvement)
+      
       static size_t last_persistent_index = 0; 
       size_t current_index = last_persistent_index;
       for (size_t i = 0; i < this->persistent_messages_.size(); ++i) {
@@ -873,6 +866,223 @@ void B48DisplayController::run_time_test_mode() {
     // Update the last update time
     this->last_time_test_update_ = now;
   }
+}
+
+// Helper methods for setup to improve readability and avoid gotos
+
+bool B48DisplayController::initialize_filesystem() {
+  // Log ESP32 heap information first
+  ESP_LOGI(TAG, "ESP32 Memory - Free heap: %u bytes, Minimum free heap: %u bytes", 
+           ESP.getFreeHeap(), ESP.getMinFreeHeap());
+  
+  ESP_LOGI(TAG, "Initializing LittleFS...");
+  
+  // Find the partition labeled "spiffs" or similar in the partition table
+  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+  if (it == NULL) {
+    ESP_LOGE(TAG, "Failed to find SPIFFS partition!");
+    return false;
+  }
+  
+  const esp_partition_t* spiffs_partition = esp_partition_get(it);
+  esp_partition_iterator_release(it);
+  
+  ESP_LOGI(TAG, "Found SPIFFS partition: label='%s', size=%u bytes (%.1f KB)",
+           spiffs_partition->label, spiffs_partition->size, spiffs_partition->size/1024.0f);
+  
+  // Try to mount without formatting first
+  if (!LittleFS.begin(false)) {
+    ESP_LOGW(TAG, "Initial LittleFS mount failed. Trying format=true...");
+    if (!LittleFS.begin(true)) {
+      ESP_LOGE(TAG, "Failed to mount LittleFS even after formatting. Running without database.");
+      return false;
+    }
+    ESP_LOGI(TAG, "LittleFS mounted successfully after formatting.");
+  } else {
+    ESP_LOGI(TAG, "LittleFS mounted successfully without formatting.");
+  }
+  
+  // Get and log detailed storage information
+  size_t total_bytes = LittleFS.totalBytes();
+  size_t used_bytes = LittleFS.usedBytes();
+  size_t free_bytes = total_bytes - used_bytes;
+  float used_percent = (used_bytes * 100.0f) / total_bytes;
+  
+  ESP_LOGI(TAG, "LittleFS storage:");
+  ESP_LOGI(TAG, "  Total space: %zu bytes (%.1f KB)", total_bytes, total_bytes/1024.0f);
+  ESP_LOGI(TAG, "  Used space:  %zu bytes (%.1f KB)", used_bytes, used_bytes/1024.0f);
+  ESP_LOGI(TAG, "  Free space:  %zu bytes (%.1f KB)", free_bytes, free_bytes/1024.0f);
+  ESP_LOGI(TAG, "  Usage:       %.1f%%", used_percent);
+  
+  ESP_LOGI(TAG, "  Partition:   %u bytes (%.1f KB)", spiffs_partition->size, spiffs_partition->size/1024.0f);
+  
+  // If total_bytes is significantly smaller than partition size, something is wrong
+  if (total_bytes < spiffs_partition->size * 0.8) {
+    ESP_LOGW(TAG, "LittleFS is only seeing %zu bytes when partition is %u bytes!",
+             total_bytes, spiffs_partition->size);
+    ESP_LOGW(TAG, "This may indicate a configuration issue. Will continue with available space.");
+  }
+  
+  // If this is a dedicated partition for SQLite, inform about expectations
+  ESP_LOGI(TAG, "SQLite typically needs 30-50KB of free contiguous space");
+  
+  // Only check if we have minimum required space - lower threshold to work with available space
+  if (free_bytes < 16384) { // Changed from 32768 (32KB) to 16384 (16KB)
+    ESP_LOGE(TAG, "Not enough free space for database (need at least 16KB). Consider increasing partition size.");
+    return false;
+  }
+  
+  // List files in the root directory to see what's taking up space
+  ESP_LOGI(TAG, "Files in LittleFS root:");
+  File root = LittleFS.open("/");
+  if (root && root.isDirectory()) {
+    File file = root.openNextFile();
+    int file_count = 0;
+    size_t total_listed_size = 0;
+    while (file) {  // Remove the limit to show all files
+      size_t file_size = file.size();
+      total_listed_size += file_size;
+      ESP_LOGI(TAG, "  %s: %zu bytes (%.1f KB)", file.name(), file_size, file_size/1024.0f);
+      file = root.openNextFile();
+      file_count++;
+    }
+    ESP_LOGI(TAG, "Total: %d files using %zu bytes (%.1f KB)", file_count, total_listed_size, total_listed_size/1024.0f);
+  }
+  root.close();
+  
+  return true;
+}
+
+bool B48DisplayController::check_database_prerequisites() {
+  // Check database path
+  if (this->database_path_.empty()) {
+    ESP_LOGE(TAG, "Database path is empty! Running without database.");
+    return false;
+  }
+  
+  return true;
+}
+
+bool B48DisplayController::initialize_database() {
+  ESP_LOGI(TAG, "Creating database manager with path: '%s'", this->database_path_.c_str());
+  
+  // Check if the database file already exists and log its size
+  if (LittleFS.exists(this->database_path_.c_str())) {
+    File db_file = LittleFS.open(this->database_path_.c_str(), "r");
+    if (db_file) {
+      size_t file_size = db_file.size();
+      db_file.close();
+      ESP_LOGI(TAG, "Existing database file size: %zu bytes (%.1f KB)", file_size, file_size/1024.0f);
+      
+      // Only delete if the file is suspiciously small (likely corrupt)
+      if (file_size < 512) {
+        ESP_LOGW(TAG, "Database file exists but is very small, might be corrupt. Removing...");
+        if (LittleFS.remove(this->database_path_.c_str())) {
+          ESP_LOGI(TAG, "Removed potentially corrupt database file");
+        } else {
+          ESP_LOGE(TAG, "Failed to remove potentially corrupt database file");
+        }
+      }
+    }
+  } else {
+    ESP_LOGI(TAG, "No existing database file found, will create new");
+  }
+  
+  // Create the database manager
+  db_manager_.reset(new B48DatabaseManager(this->database_path_));
+  
+  // Try to initialize the database with retries
+  for (int retry = 0; retry < 3; retry++) {
+    if (retry > 0) {
+      ESP_LOGW(TAG, "Retrying database initialization (attempt %d of 3)...", retry + 1);
+      
+      // Log memory status before retry
+      size_t total_bytes = LittleFS.totalBytes();
+      size_t used_bytes = LittleFS.usedBytes();
+      size_t free_bytes = total_bytes - used_bytes;
+      ESP_LOGI(TAG, "Before retry: %.1f KB free in LittleFS, %u bytes free in heap", 
+               free_bytes/1024.0f, ESP.getFreeHeap());
+      
+      // If second retry fails, try to delete the file before final attempt
+      if (retry == 2) {
+        ESP_LOGW(TAG, "Final retry attempt - trying to remove database file first...");
+        if (LittleFS.exists(this->database_path_.c_str())) {
+          if (LittleFS.remove(this->database_path_.c_str())) {
+            ESP_LOGI(TAG, "Successfully removed existing database file for fresh start");
+          } else {
+            ESP_LOGE(TAG, "Failed to remove database file");
+          }
+        }
+      }
+      
+      delay(1000); // Wait a second before retrying
+    }
+    
+    // Attempt initialization
+    bool success = this->db_manager_->initialize();
+    
+    if (success) {
+      // Log final database file size on success
+      if (LittleFS.exists(this->database_path_.c_str())) {
+        File db_file = LittleFS.open(this->database_path_.c_str(), "r");
+        if (db_file) {
+          size_t file_size = db_file.size();
+          db_file.close();
+          ESP_LOGI(TAG, "Successfully created database file: %zu bytes (%.1f KB)", 
+                   file_size, file_size/1024.0f);
+        }
+      }
+      
+      ESP_LOGI(TAG, "Database initialized successfully!");
+      return true;
+    } else {
+      ESP_LOGE(TAG, "Failed to initialize the database manager (attempt %d)", retry + 1);
+    }
+  }
+  
+  // If we get here, all attempts failed
+  ESP_LOGE(TAG, "All database initialization attempts failed! Running without database.");
+  db_manager_.reset(nullptr); // Clean up failed DB manager
+  return false;
+}
+
+bool B48DisplayController::handle_database_wipe() {
+  ESP_LOGW(TAG, "Configuration has wipe_database_on_boot enabled. Wiping database...");
+  if (!db_manager_->wipe_database()) {
+    ESP_LOGE(TAG, "Failed to wipe database");
+    return true; // Not a fatal error, continue with database (even if wipe failed)
+  }
+  
+  // Need to recreate schema and bootstrap after wiping
+  if (!db_manager_->initialize()) {
+    ESP_LOGE(TAG, "Failed to reinitialize database after wiping. Running without database.");
+    db_manager_.reset(nullptr); // Clean up failed DB manager
+    return false;
+  }
+  
+  return true;
+}
+
+void B48DisplayController::display_startup_message(bool db_initialized) {
+  auto loading_msg = std::make_shared<MessageEntry>();
+  loading_msg->message_id = -1;
+  loading_msg->line_number = 48;
+  loading_msg->tarif_zone = 101;
+  loading_msg->static_intro = "Loading";
+  loading_msg->is_ephemeral = true;
+  
+  if (db_initialized) {
+    loading_msg->scrolling_message = "System ready with database.";
+    loading_msg->next_message_hint = "DB Ready";
+    ESP_LOGI(TAG, "Running with database support");
+  } else {
+    loading_msg->scrolling_message = "System running in no-database mode.";
+    loading_msg->next_message_hint = "No DB";
+    ESP_LOGW(TAG, "Running in no-database mode");
+  }
+  
+  loading_msg->priority = 75;
+  send_commands_for_message(loading_msg);
 }
 }  // namespace b48_display_controller
 }  // namespace esphome
