@@ -57,7 +57,6 @@ class B48DisplayController : public Component {
   void set_transition_duration(int duration) { this->transition_duration_ = duration; }
   void set_time_sync_interval(int interval) { this->time_sync_interval_ = interval; }
   void set_emergency_priority_threshold(int threshold) { this->emergency_priority_threshold_ = threshold; }
-  void set_min_seconds_between_repeats(int seconds) { this->min_seconds_between_repeats_ = seconds; }
   void set_run_tests_on_startup(bool run_tests) { this->run_tests_on_startup_ = run_tests; }
   void set_wipe_database_on_boot(bool wipe) { this->wipe_database_on_boot_ = wipe; }
   
@@ -124,6 +123,7 @@ class B48DisplayController : public Component {
   bool init_database();
   bool refresh_message_cache();
   void check_expired_messages();
+  void check_ephemeral_messages();
   
   // Setup helper methods
   bool initialize_filesystem();
@@ -175,7 +175,6 @@ class B48DisplayController : public Component {
   int transition_duration_{4};
   int time_sync_interval_{10};
   int emergency_priority_threshold_{95};
-  int min_seconds_between_repeats_{30};
   bool run_tests_on_startup_{false};
   bool wipe_database_on_boot_{false};
   

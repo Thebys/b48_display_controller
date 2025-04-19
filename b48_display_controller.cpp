@@ -150,9 +150,16 @@ void B48DisplayController::loop() {
       break;
   }
 
-  // Periodically check for expired messages (every 300 seconds)
+  // Check ephemeral messages frequently (every 6 seconds)
+  static unsigned long last_ephemeral_check = 0;
+  if (millis() - last_ephemeral_check > 6 * 1000) {
+    check_ephemeral_messages();
+    last_ephemeral_check = millis();
+  }
+  
+  // Periodically check for expired messages (every hour)
   static unsigned long last_expiry_check = 0;
-  if (millis() - last_expiry_check > 300 * 1000) {
+  if (millis() - last_expiry_check > 3600 * 1000) {
     check_expired_messages();
     last_expiry_check = millis();
   }
@@ -182,7 +189,6 @@ void B48DisplayController::dump_config() {
   ESP_LOGCONFIG(TAG, "  Transition Duration: %d seconds", this->transition_duration_);
   ESP_LOGCONFIG(TAG, "  Time Sync Interval: %d seconds", this->time_sync_interval_);
   ESP_LOGCONFIG(TAG, "  Emergency Priority Threshold: %d", this->emergency_priority_threshold_);
-  ESP_LOGCONFIG(TAG, "  Min Seconds Between Repeats: %d", this->min_seconds_between_repeats_);
   ESP_LOGCONFIG(TAG, "  Run Tests on Startup: %s", YESNO(this->run_tests_on_startup_));
   ESP_LOGCONFIG(TAG, "  Wipe Database on Boot: %s", YESNO(this->wipe_database_on_boot_));
   if (this->display_enable_pin_ >= 0) {
@@ -218,7 +224,6 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
     msg->scrolling_message = scrolling_message;
     msg->next_message_hint = next_message_hint;
     msg->expiry_time = time(nullptr) + duration_seconds;  // Set TTL based on current time
-    msg->remaining_displays = -1;  // Set to -1 = infinite displays until TTL expires (matches previous logic)
     msg->last_display_time = 0;    // Use correct member name
     msg->is_ephemeral = true;      // Mark as ephemeral
 
@@ -229,6 +234,13 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
                this->ephemeral_messages_.size());
     }
     update_ha_queue_size();  // Update HA sensor
+
+    // After adding a new ephemeral message
+    std::sort(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(), 
+        [](const std::shared_ptr<MessageEntry> &a, const std::shared_ptr<MessageEntry> &b) {
+            return a->priority > b->priority;  // Sort by descending priority
+        });
+
     return true;
   } else {
     // --- Handle Persistent Message (Saved to DB) ---
@@ -416,6 +428,34 @@ bool B48DisplayController::refresh_message_cache() {
   return true;
 }
 
+void B48DisplayController::check_ephemeral_messages() {
+  // Only check ephemeral messages in RAM (no database interaction)
+  std::lock_guard<std::mutex> lock(this->message_mutex_);
+  time_t now = time(nullptr);
+  int ephemeral_expired = 0;
+
+  // Remove expired ephemeral messages based on TTL only
+  this->ephemeral_messages_.erase(
+      std::remove_if(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
+                     [&](const std::shared_ptr<MessageEntry> &msg) {
+                       bool expired = false;
+                       // Check TTL
+                       if (msg->expiry_time > 0 && msg->expiry_time <= now) {
+                         expired = true;
+                       }
+                       if (expired) {
+                         ephemeral_expired++;
+                       }
+                       return expired;
+                     }),
+      this->ephemeral_messages_.end());
+
+  if (ephemeral_expired > 0) {
+    ESP_LOGI(TAG, "Expired %d ephemeral messages from RAM", ephemeral_expired);
+    // No need to update HA sensor for ephemeral messages
+  }
+}
+
 void B48DisplayController::check_expired_messages() {
   if (!this->db_manager_) {
     ESP_LOGE(TAG, "Database manager is not initialized for expiry check");
@@ -435,36 +475,8 @@ void B48DisplayController::check_expired_messages() {
   } else if (persistent_expired < 0) {
     ESP_LOGE(TAG, "Error checking persistent message expiry.");
   }
-
-  // --- Check and expire ephemeral messages in RAM ---
-  std::lock_guard<std::mutex> lock(this->message_mutex_);
-  time_t now = time(nullptr);
-  int ephemeral_expired = 0;
-
-  // Remove expired ephemeral messages based on TTL or display count
-  this->ephemeral_messages_.erase(
-      std::remove_if(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
-                     [&](const std::shared_ptr<MessageEntry> &msg) {
-                       bool expired = false;
-                       // Check TTL
-                       if (msg->expiry_time > 0 && msg->expiry_time <= now) {
-                         expired = true;
-                       }
-                       // Check display count (if not TTL expired)
-                       if (!expired && msg->remaining_displays == 0) {  // 0 means used up, -1 means infinite
-                         expired = true;
-                       }
-                       if (expired) {
-                         ephemeral_expired++;
-                       }
-                       return expired;
-                     }),
-      this->ephemeral_messages_.end());
-
-  if (ephemeral_expired > 0) {
-    ESP_LOGI(TAG, "Expired %d ephemeral messages from RAM", ephemeral_expired);
-    // No HA sensor update needed for ephemeral messages
-  }
+  
+  // No need to check ephemeral messages here since we have a separate method for that
 }
 
 std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
@@ -480,13 +492,6 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
     // Basic checks (should already be handled by expiry check, but good for safety)
     if (msg->expiry_time > 0 && msg->expiry_time <= now)
       continue;
-    if (msg->remaining_displays == 0)
-      continue;
-
-    // Check minimum time between repeats (if applicable, use main setting for now)
-    if (now - msg->last_display_time < this->min_seconds_between_repeats_) {
-      continue;
-    }
 
     selected_message = msg;
     ESP_LOGD(TAG, "Selected ephemeral message (Prio: %d)", selected_message->priority);
@@ -495,52 +500,47 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 
   // 2. If no suitable ephemeral message and database is available, check Persistent Messages
   if (!selected_message && has_database) {
-    // Iterate through persistent messages (already sorted by priority DESC, id ASC)
-    // Find the next message to display, considering rotation and min repeat interval
-
+    // Iterate through persistent messages using round-robin rotation
+    
     static size_t last_persistent_index = 0;
-    size_t current_index = last_persistent_index;
-    for (size_t i = 0; i < this->persistent_messages_.size(); ++i) {
-      current_index = (last_persistent_index + i) % this->persistent_messages_.size();
-      const auto &msg = this->persistent_messages_[current_index];
-
-      // Check minimum time between repeats
-      auto it = last_display_times_.find(msg->message_id);
-      time_t last_shown = (it != last_display_times_.end()) ? it->second : 0;
-
-      if (now - last_shown >= this->min_seconds_between_repeats_) {
-        selected_message = msg;
-        last_persistent_index = (current_index + 1) % this->persistent_messages_.size();  // Move to next for next time
-        ESP_LOGD(TAG, "Selected persistent message ID: %d (Prio: %d)", selected_message->message_id,
-                 selected_message->priority);
-        break;
-      }
+    
+    if (!this->persistent_messages_.empty()) {
+      // Simply select the next message in rotation
+      size_t current_index = last_persistent_index % this->persistent_messages_.size();
+      selected_message = this->persistent_messages_[current_index];
+      
+      // Move to next message for next time
+      last_persistent_index = (last_persistent_index + 1) % this->persistent_messages_.size();
+      
+      ESP_LOGD(TAG, "Selected persistent message ID: %d (Prio: %d)", 
+               selected_message->message_id, selected_message->priority);
     }
   }
 
   // 3. If still no message, return nullptr (will trigger fallback)
   if (!selected_message) {
-    ESP_LOGV(TAG, "No suitable message found for display.");
+    ESP_LOGW(TAG, "No suitable message found for display.");
   }
 
   return selected_message;
 }
 
 // --- Other methods (calculate_display_duration, update_message_display_stats, etc.) ---
-// Need to be updated to handle ephemeral messages correctly (e.g., decrement remaining_displays)
+// Updated to handle ephemeral messages using TTL-based expiration only
 
 int B48DisplayController::calculate_display_duration(const std::shared_ptr<MessageEntry> &msg) {
-  // Simple duration calculation (example)
   // Could be based on message length, priority, etc.
   if (!msg)
-    return 5;  // Default duration if msg is null
+    return 4;  // Default duration if msg is null
 
   int base_duration = 10;    // Base seconds
   int chars_per_second = 3;  // Estimated scroll speed
   int length_duration = msg->scrolling_message.length() / chars_per_second;
 
   // Use a simple heuristic: longer messages display for longer, up to a max
-  return std::max(base_duration, std::min(length_duration, 20));  // E.g., 5-20 seconds
+  int calculated_duration = std::max(base_duration, std::min(length_duration, 20));
+  ESP_LOGI(TAG, "Calculated display duration for message ID %d: base_duration=%d, length_duration=%d, calculated_duration=%d", msg->message_id, base_duration, length_duration, calculated_duration);
+  return calculated_duration;
 }
 
 void B48DisplayController::update_message_display_stats(const std::shared_ptr<MessageEntry> &msg) {
@@ -550,21 +550,11 @@ void B48DisplayController::update_message_display_stats(const std::shared_ptr<Me
   time_t now = time(nullptr);
 
   if (msg->is_ephemeral) {
-    std::lock_guard<std::mutex> lock(this->message_mutex_);  // Lock as we modify ephemeral list potentially
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
     msg->last_display_time = now;
-    if (msg->remaining_displays > 0) {  // Only decrement if it's a finite count
-      msg->remaining_displays--;
-      ESP_LOGD(TAG, "Decremented display count for ephemeral message (Remaining: %d)", msg->remaining_displays);
-    }
-    // Check if expired now due to count
-    if (msg->remaining_displays == 0) {
-      ESP_LOGI(TAG, "Ephemeral message reached display count limit, will be removed.");
-      // Mark for removal in the next check_expired_messages cycle
-    }
   } else {
     // Update last display time for persistent messages (used for repeat delay)
     last_display_times_[msg->message_id] = now;
-    // DB update for display count/time is not part of this schema
     ESP_LOGV(TAG, "Updated last display time for persistent message ID %d", msg->message_id);
   }
 }

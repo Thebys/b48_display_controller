@@ -18,7 +18,6 @@ struct MessageEntry {
   int priority = 50;           // 0-100
   time_t expiry_time = 0;      // When this message expires
   time_t last_display_time = 0; // Timestamp when message was last displayed
-  int remaining_displays = 0;  // For ephemeral messages
   int line_number = 0;        // Line number to display
   int tarif_zone = 0;         // Tariff zone to display
   std::string static_intro;   // Static intro text (zI command)

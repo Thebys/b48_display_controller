@@ -18,7 +18,6 @@ CONF_DATABASE_PATH = "database_path"
 CONF_TRANSITION_DURATION = "transition_duration"
 CONF_TIME_SYNC_INTERVAL = "time_sync_interval"
 CONF_EMERGENCY_PRIORITY_THRESHOLD = "emergency_priority_threshold"
-CONF_MIN_SECONDS_BETWEEN_REPEATS = "min_seconds_between_repeats"
 CONF_RUN_TESTS_ON_STARTUP = "run_tests_on_startup"
 CONF_WIPE_DATABASE_ON_BOOT = "wipe_database_on_boot"
 CONF_DISPLAY_ENABLE_PIN = "display_enable_pin"  # New testing-only configuration
@@ -56,7 +55,6 @@ async def to_code(config):
     cg.add(var.set_transition_duration(config[CONF_TRANSITION_DURATION]))
     cg.add(var.set_time_sync_interval(config[CONF_TIME_SYNC_INTERVAL]))
     cg.add(var.set_emergency_priority_threshold(config[CONF_EMERGENCY_PRIORITY_THRESHOLD]))
-    cg.add(var.set_min_seconds_between_repeats(config[CONF_MIN_SECONDS_BETWEEN_REPEATS]))
     cg.add(var.set_run_tests_on_startup(config[CONF_RUN_TESTS_ON_STARTUP]))
     cg.add(var.set_wipe_database_on_boot(config[CONF_WIPE_DATABASE_ON_BOOT]))
     
