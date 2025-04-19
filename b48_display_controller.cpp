@@ -142,28 +142,32 @@ void B48DisplayController::loop() {
     case TRANSITION_MODE:
       run_transition_mode();
       break;
-    case MESSAGE_PREPARATION:
-      run_message_preparation();
-      break;
     case DISPLAY_MESSAGE:
       run_display_message();
       break;
     case TIME_TEST_MODE:
-      run_time_test_mode();  // Handle the new time test mode state
+      run_time_test_mode();
       break;
   }
 
   // Periodically check for expired messages (every 300 seconds)
   static unsigned long last_expiry_check = 0;
-  if (millis() - last_expiry_check > 300*1000) {
+  if (millis() - last_expiry_check > 300 * 1000) {
     check_expired_messages();
     last_expiry_check = millis();
   }
-  // --- Add periodic time sync --- (Removed sync service, handle internally)
+  
+  // Handle time synchronization with the display
   if (this->time_sync_interval_ > 0 && this->current_time_ > 0) {
-    if (millis() - this->last_time_sync_ > (unsigned long) this->time_sync_interval_ * 1000) {
-      send_time_update();  // Send current internal time to display
-      this->last_time_sync_ = millis();
+    unsigned long current_millis = millis();
+    unsigned long time_since_last_sync = current_millis - this->last_time_sync_;
+    unsigned long sync_interval_millis = (unsigned long)this->time_sync_interval_ * 1000;
+    
+    if (time_since_last_sync >= sync_interval_millis) {
+      ESP_LOGD(TAG, "Performing time sync. Elapsed: %lu ms, Interval: %lu ms", 
+               time_since_last_sync, sync_interval_millis);
+      send_time_update();
+      this->last_time_sync_ = current_millis;
     }
   }
 
@@ -402,7 +406,7 @@ bool B48DisplayController::refresh_message_cache() {
   ESP_LOGD(TAG, "Database returned %d persistent messages", new_persistent.size());
 
   // Now update the cache under lock
-  {  
+  {
     std::lock_guard<std::mutex> lock(this->message_mutex_);
     this->persistent_messages_ = std::move(new_persistent);
   }
@@ -531,7 +535,7 @@ int B48DisplayController::calculate_display_duration(const std::shared_ptr<Messa
   if (!msg)
     return 5;  // Default duration if msg is null
 
-  int base_duration = 10;     // Base seconds
+  int base_duration = 10;    // Base seconds
   int chars_per_second = 3;  // Estimated scroll speed
   int length_duration = msg->scrolling_message.length() / chars_per_second;
 
@@ -627,28 +631,37 @@ void B48DisplayController::send_commands_for_message(const std::shared_ptr<Messa
 // --- State Machine Methods ---
 
 void B48DisplayController::run_transition_mode() {
-  // Simple transition: wait, then prepare next message
+  // The transition mode is used to prepare the next message.
+  // First set cycle 6, showing "next message" hint of CURRENT message.
   unsigned long time_in_state = millis() - this->state_change_time_;
-  if (time_in_state >= (unsigned long) this->transition_duration_ * 1000) {
-    ESP_LOGD(TAG, "Transition complete, moving to MESSAGE_PREPARATION");
-    this->state_ = MESSAGE_PREPARATION;
-    this->state_change_time_ = millis();
-  }
-}
+  unsigned long transition_duration_ms = this->transition_duration_ * 1000;
 
-void B48DisplayController::run_message_preparation() {
-  ESP_LOGD(TAG, "Preparing next message...");
-  this->current_message_ = select_next_message();
-
-  if (this->current_message_) {
-    send_commands_for_message(this->current_message_);
-    this->state_ = DISPLAY_MESSAGE;
-    ESP_LOGD(TAG, "Message prepared, moving to DISPLAY_MESSAGE");
-  } else {
-    display_fallback_message();      // Display fallback if no message available
-    this->state_ = DISPLAY_MESSAGE;  // Still move to display state for fallback
-    ESP_LOGD(TAG, "No message selected, displaying fallback, moving to DISPLAY_MESSAGE");
+  // If this is our first entry to this state, log and setup
+  if (time_in_state == 0) {
+    ESP_LOGD(TAG, "WELCOME TO TRANSITION MODE");
+    this->serial_protocol_.switch_to_cycle(6);
+    this->current_message_ = select_next_message();
+    
+    if (this->current_message_) {
+      send_commands_for_message(this->current_message_);
+      ESP_LOGD(TAG, "Message prepared, waiting in cycle 6 for %d seconds", this->transition_duration_);
+    } else {
+      display_fallback_message();
+      ESP_LOGD(TAG, "No message selected, displaying fallback, waiting in cycle 6 for %d seconds", this->transition_duration_);
+    }
+    return; // Stay in this state until transition duration elapses
   }
+  
+  // Check if transition duration has elapsed
+  if (time_in_state < transition_duration_ms) {
+    // Not enough time has passed, stay in transition mode
+    return;
+  }
+  
+  // Transition duration has elapsed, switch to cycle 0 and move to display mode
+  ESP_LOGD(TAG, "Transition duration elapsed, switching to cycle 0");
+  this->serial_protocol_.switch_to_cycle(0);
+  this->state_ = DISPLAY_MESSAGE;
   this->state_change_time_ = millis();
 }
 
