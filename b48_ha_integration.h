@@ -24,7 +24,6 @@ class B48HAIntegration : public Component, public api::CustomAPIDevice {
   void set_parent(B48DisplayController *parent) { this->parent_ = parent; }
 
   void setup() override;
-  void dump_config() override;
   float get_setup_priority() const override { return esphome::setup_priority::AFTER_CONNECTION; } // Needs API connection
 
   // --- Setters for Entities (called from parent) ---

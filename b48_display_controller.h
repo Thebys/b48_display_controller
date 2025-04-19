@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <atomic>
 
 #include <sqlite3.h>
 #include <Arduino.h>
@@ -215,6 +216,9 @@ class B48DisplayController : public Component {
   unsigned int current_time_test_value_{0};
   unsigned long last_time_test_update_{0};
   static constexpr unsigned long TIME_TEST_INTERVAL_MS = 800; // Update every 800ms
+
+  // Helper to schedule refresh of message cache on loopTask
+  std::atomic<bool> pending_refresh_{false};
 };
 
 }  // namespace b48_display_controller

@@ -35,7 +35,7 @@ B48DisplayController::~B48DisplayController() {
 void B48DisplayController::set_message_queue_size_sensor(sensor::Sensor *sensor) {
   // Store the sensor regardless of whether HA integration exists yet
   this->message_queue_size_sensor_ = sensor;
-  
+
   // If HA integration exists, pass the sensor to it
   if (this->ha_integration_) {
     this->ha_integration_->set_message_queue_size_sensor(sensor);
@@ -51,7 +51,7 @@ void B48DisplayController::setup() {
     ESP_LOGD(TAG, "Creating HA integration instance");
     this->ha_integration_.reset(new B48HAIntegration());
     this->ha_integration_->set_parent(this);
-    
+
     // Pass the stored sensor to the HA integration
     if (this->message_queue_size_sensor_) {
       ESP_LOGD(TAG, "Passing message queue size sensor to HA integration");
@@ -72,35 +72,35 @@ void B48DisplayController::setup() {
 
   // --- Database Initialization Phase ---
   bool db_initialized = false;
-  
+
   // Setup the HA integration component right away - it doesn't need DB
   if (this->ha_integration_) {
     ESP_LOGI(TAG, "Registering HA integration component...");
-    App.register_component(this->ha_integration_.get()); // Register HA integration component
+    App.register_component(this->ha_integration_.get());  // Register HA integration component
   } else {
     ESP_LOGW(TAG, "HA integration component not initialized!");
   }
 
   // Initialize filesystem first (required for database)
   bool filesystem_ok = initialize_filesystem();
-  
+
   // Only continue with database initialization if filesystem is ready
   if (filesystem_ok) {
     // Check if we have enough space and a valid path before proceeding
     if (check_database_prerequisites()) {
       // We can try to initialize the database
       db_initialized = initialize_database();
-      
+
       // If the database initialized successfully, check if we need to wipe it
       if (db_initialized && this->wipe_database_on_boot_) {
         db_initialized = handle_database_wipe();
       }
-      
+
       // Run self-tests if configured to do so and database is available
       if (db_initialized && this->run_tests_on_startup_) {
         this->runSelfTests();
       }
-      
+
       // Load messages from the database if available
       if (db_initialized) {
         if (!refresh_message_cache()) {
@@ -110,29 +110,28 @@ void B48DisplayController::setup() {
       }
     }
   }
-  
+
   // Prepare appropriate loading message based on database status
   display_startup_message(db_initialized);
-  
+
   // Initial update for HA sensors
   update_ha_queue_size();
 
   // Start with transition mode
   this->state_ = TRANSITION_MODE;
   this->state_change_time_ = millis();
-  
+
   // Note: we don't mark the component as failed even without a database
   // Since it can still work in ephemeral-only mode
-  ESP_LOGI(TAG, "B48 Display Controller setup complete - %s", 
-           db_initialized ? "with database" : "in no-database mode");
+  ESP_LOGI(TAG, "B48 Display Controller setup complete - %s", db_initialized ? "with database" : "in no-database mode");
 }
 
 void B48DisplayController::loop() {
   // Update current time using standard C time
   this->current_time_ = time(nullptr);
   // Log if time seems invalid (before 2021)
-  if (this->current_time_ < 1609459200 && this->current_time_ != 0) { 
-      ESP_LOGV(TAG, "System time might not be synchronized yet (%ld)", (long)this->current_time_);
+  if (this->current_time_ < 1609459200 && this->current_time_ != 0) {
+    ESP_LOGV(TAG, "System time might not be synchronized yet (%ld)", (long) this->current_time_);
   }
 
   // Check for emergency messages first
@@ -150,7 +149,7 @@ void B48DisplayController::loop() {
       run_display_message();
       break;
     case TIME_TEST_MODE:
-      run_time_test_mode(); // Handle the new time test mode state
+      run_time_test_mode();  // Handle the new time test mode state
       break;
   }
 
@@ -162,11 +161,15 @@ void B48DisplayController::loop() {
   }
   // --- Add periodic time sync --- (Removed sync service, handle internally)
   if (this->time_sync_interval_ > 0 && this->current_time_ > 0) {
-      if (millis() - this->last_time_sync_ > (unsigned long)this->time_sync_interval_ * 1000) {
-          send_time_update(); // Send current internal time to display
-          this->last_time_sync_ = millis();
-      }
+    if (millis() - this->last_time_sync_ > (unsigned long) this->time_sync_interval_ * 1000) {
+      send_time_update();  // Send current internal time to display
+      this->last_time_sync_ = millis();
+    }
   }
+
+  // Feed watchdog at end of loop to prevent timeout
+  yield();
+  esp_task_wdt_reset();
 }
 
 void B48DisplayController::dump_config() {
@@ -179,7 +182,7 @@ void B48DisplayController::dump_config() {
   ESP_LOGCONFIG(TAG, "  Run Tests on Startup: %s", YESNO(this->run_tests_on_startup_));
   ESP_LOGCONFIG(TAG, "  Wipe Database on Boot: %s", YESNO(this->wipe_database_on_boot_));
   if (this->display_enable_pin_ >= 0) {
-      ESP_LOGCONFIG(TAG, "  Display Enable Pin: GPIO%d", this->display_enable_pin_);
+    ESP_LOGCONFIG(TAG, "  Display Enable Pin: GPIO%d", this->display_enable_pin_);
   }
   ESP_LOGCONFIG(TAG, "  Time Test Mode: Available via HA service");
   ESP_LOGCONFIG(TAG, "  Time Test Status: %s", this->time_test_mode_active_ ? "Active" : "Inactive");
@@ -188,133 +191,119 @@ void B48DisplayController::dump_config() {
   std::lock_guard<std::mutex> lock(this->message_mutex_);
   ESP_LOGCONFIG(TAG, "  Persistent Messages (in cache): %d", this->persistent_messages_.size());
   ESP_LOGCONFIG(TAG, "  Ephemeral Messages (in RAM): %d", this->ephemeral_messages_.size());
-
-  // Dump HA Integration config
-  if (this->ha_integration_) {
-      this->ha_integration_->dump_config();
-  }
 }
 
 // --- Public Methods Called by HA Integration ---
 
 // Implementation for the unified add_message function
-bool B48DisplayController::add_message(int priority, int line_number, int tarif_zone,
-                                     const std::string &static_intro, const std::string &scrolling_message,
-                                     const std::string &next_message_hint, int duration_seconds,
-                                     const std::string &source_info, bool check_duplicates) {
-    std::lock_guard<std::mutex> lock(this->message_mutex_);
+bool B48DisplayController::add_message(int priority, int line_number, int tarif_zone, const std::string &static_intro,
+                                       const std::string &scrolling_message, const std::string &next_message_hint,
+                                       int duration_seconds, const std::string &source_info, bool check_duplicates) {
+  // Determine if the message is ephemeral or persistent based on duration
+  if (duration_seconds > 0 && duration_seconds < EPHEMERAL_DURATION_THRESHOLD_SECONDS) {
+    // --- Handle Ephemeral Message (Not saved to DB) ---
+    ESP_LOGD(TAG, "Adding ephemeral message (duration %ds < %ds): %s%s (len=%zu)", duration_seconds,
+             EPHEMERAL_DURATION_THRESHOLD_SECONDS, scrolling_message.substr(0, 30).c_str(),
+             scrolling_message.length() > 30 ? "..." : "", scrolling_message.length());
 
-    // Determine if the message is ephemeral or persistent based on duration
-    if (duration_seconds > 0 && duration_seconds < EPHEMERAL_DURATION_THRESHOLD_SECONDS) {
-        // --- Handle Ephemeral Message (Not saved to DB) ---
-        ESP_LOGD(TAG, "Adding ephemeral message (duration %ds < %ds): %s%s (len=%zu)", 
-                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, 
-                 scrolling_message.substr(0, 30).c_str(), 
-                 scrolling_message.length() > 30 ? "..." : "",
-                 scrolling_message.length());
+    auto msg = std::make_shared<MessageEntry>();
+    msg->message_id = -1;  // Ephemeral messages don't have a DB ID
+    msg->priority = priority;
+    msg->line_number = line_number;
+    msg->tarif_zone = tarif_zone;
+    msg->static_intro = static_intro;
+    msg->scrolling_message = scrolling_message;
+    msg->next_message_hint = next_message_hint;
+    msg->expiry_time = time(nullptr) + duration_seconds;  // Set TTL based on current time
+    msg->remaining_displays = -1;  // Set to -1 = infinite displays until TTL expires (matches previous logic)
+    msg->last_display_time = 0;    // Use correct member name
+    msg->is_ephemeral = true;      // Mark as ephemeral
 
-        auto msg = std::make_shared<MessageEntry>();
-        msg->message_id = -1; // Ephemeral messages don't have a DB ID
-        msg->priority = priority;
-        msg->line_number = line_number;
-        msg->tarif_zone = tarif_zone;
-        msg->static_intro = static_intro;
-        msg->scrolling_message = scrolling_message;
-        msg->next_message_hint = next_message_hint;
-        msg->expiry_time = time(nullptr) + duration_seconds; // Set TTL based on current time
-        msg->remaining_displays = -1; // Set to -1 = infinite displays until TTL expires (matches previous logic)
-        msg->last_display_time = 0; // Use correct member name
-        msg->is_ephemeral = true; // Mark as ephemeral
-
-        this->ephemeral_messages_.push_back(msg);
-        ESP_LOGD(TAG, "Ephemeral message added to RAM queue. Current ephemeral count: %d", this->ephemeral_messages_.size());
-        update_ha_queue_size(); // Update HA sensor
-        return true;
-
-    } else {
-        // --- Handle Persistent Message (Saved to DB) ---
-        ESP_LOGD(TAG, "Adding persistent message (duration %ds >= %ds or <= 0): %s%s (len=%zu)", 
-                duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS, 
-                scrolling_message.substr(0, 30).c_str(),
-                scrolling_message.length() > 30 ? "..." : "",
-                scrolling_message.length());
-
-        if (!this->db_manager_) {
-            ESP_LOGW(TAG, "Database manager is not initialized - converting to ephemeral message");
-            
-            // If database is not available, convert to ephemeral message with requested duration
-            // or a default duration if persistent (0 or negative)
-            int ephemeral_duration = (duration_seconds > 0) ? 
-                                    duration_seconds : 
-                                    EPHEMERAL_DURATION_THRESHOLD_SECONDS; // Default 10 min for persistent
-            
-            return add_message(priority, line_number, tarif_zone, static_intro, scrolling_message,
-                              next_message_hint, ephemeral_duration, source_info, false);
-        }
-
-        // Ensure duration is valid (set to 0 for permanent if > 1 year)
-        int actual_duration = duration_seconds;
-        if (actual_duration > 31536000) { // 1 year in seconds
-            ESP_LOGW(TAG, "Duration %d exceeds maximum (1 year), setting message to permanent (duration 0)", duration_seconds);
-            actual_duration = 0; // Set to 0 for permanent instead of capping
-        }
-
-        // Call the database manager to add the message
-        bool success = this->db_manager_->add_persistent_message(
-            priority, line_number, tarif_zone, static_intro, scrolling_message,
-            next_message_hint, actual_duration, // Use potentially capped duration
-            source_info.empty() ? "Persistent" : source_info, 
-            check_duplicates
-        );
-
-        if (success) {
-            ESP_LOGI(TAG, "Successfully added message to database. Refreshing cache.");
-            // Refresh cache and update HA sensor
-            if (refresh_message_cache()) {
-                ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
-                update_ha_queue_size();
-            } else {
-                ESP_LOGE(TAG, "Failed to refresh message cache after adding persistent message.");
-                // Message added to DB, but cache might be stale. Continue anyway.
-            }
-        } else {
-            ESP_LOGE(TAG, "Failed to add message to database.");
-        }
-        return success;
+    {
+      std::lock_guard<std::mutex> lock(this->message_mutex_);
+      this->ephemeral_messages_.push_back(msg);
+      ESP_LOGD(TAG, "Ephemeral message added to RAM queue. Current ephemeral count: %d",
+               this->ephemeral_messages_.size());
     }
+    update_ha_queue_size();  // Update HA sensor
+    return true;
+  } else {
+    // --- Handle Persistent Message (Saved to DB) ---
+    ESP_LOGD(TAG, "Adding persistent message (duration %ds >= %ds or <= 0): %s%s (len=%zu)", duration_seconds,
+             EPHEMERAL_DURATION_THRESHOLD_SECONDS, scrolling_message.substr(0, 30).c_str(),
+             scrolling_message.length() > 30 ? "..." : "", scrolling_message.length());
+
+    if (!this->db_manager_) {
+      ESP_LOGW(TAG, "Database manager is not initialized - converting to ephemeral message");
+
+      // If database is not available, convert to ephemeral message with requested duration
+      // or a default duration if persistent (0 or negative)
+      int ephemeral_duration = (duration_seconds > 0)
+                                   ? duration_seconds
+                                   : EPHEMERAL_DURATION_THRESHOLD_SECONDS;  // Default 10 min for persistent
+
+      return add_message(priority, line_number, tarif_zone, static_intro, scrolling_message, next_message_hint,
+                         ephemeral_duration, source_info, false);
+    }
+
+    // Ensure duration is valid (set to 0 for permanent if > 1 year)
+    int actual_duration = duration_seconds;
+    if (actual_duration > 31536000) {  // 1 year in seconds
+      ESP_LOGW(TAG, "Duration %d exceeds maximum (1 year), setting message to permanent (duration 0)",
+               duration_seconds);
+      actual_duration = 0;  // Set to 0 for permanent instead of capping
+    }
+
+    // Call the database manager to add the message
+    bool success = this->db_manager_->add_persistent_message(
+        priority, line_number, tarif_zone, static_intro, scrolling_message, next_message_hint,
+        actual_duration,  // Use potentially capped duration
+        source_info.empty() ? "Persistent" : source_info, check_duplicates);
+
+    if (success) {
+      ESP_LOGI(TAG, "Successfully added message to database. Refreshing cache.");
+      // Refresh cache and update HA sensor
+      if (refresh_message_cache()) {
+        ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
+        update_ha_queue_size();
+      } else {
+        ESP_LOGE(TAG, "Failed to refresh message cache after adding persistent message.");
+        // Message added to DB, but cache might be stale. Continue anyway.
+      }
+    } else {
+      ESP_LOGE(TAG, "Failed to add message to database.");
+    }
+    return success;
+  }
 }
 
-
-bool B48DisplayController::update_message(int message_id, int priority, bool is_enabled,
-                                                    int line_number, int tarif_zone, const std::string &static_intro,
-                                                    const std::string &scrolling_message, const std::string &next_message_hint,
-                                                    int duration_seconds, const std::string &source_info) {
+bool B48DisplayController::update_message(int message_id, int priority, bool is_enabled, int line_number,
+                                          int tarif_zone, const std::string &static_intro,
+                                          const std::string &scrolling_message, const std::string &next_message_hint,
+                                          int duration_seconds, const std::string &source_info) {
   if (!this->db_manager_) {
     ESP_LOGE(TAG, "Database manager is not initialized for update_persistent_message");
     return false;
   }
 
-  ESP_LOGD(TAG, "Updating persistent message with ID %d: %s%s (len=%zu)", 
-          message_id, 
-          scrolling_message.substr(0, 30).c_str(),
-          scrolling_message.length() > 30 ? "..." : "",
-          scrolling_message.length());
+  ESP_LOGD(TAG, "Updating persistent message with ID %d: %s%s (len=%zu)", message_id,
+           scrolling_message.substr(0, 30).c_str(), scrolling_message.length() > 30 ? "..." : "",
+           scrolling_message.length());
 
   // Call the database manager to update the message
-  bool success = this->db_manager_->update_persistent_message(
-    message_id, priority, is_enabled, line_number, tarif_zone, static_intro, scrolling_message,
-    next_message_hint, duration_seconds, source_info
-  );
+  bool success = this->db_manager_->update_persistent_message(message_id, priority, is_enabled, line_number, tarif_zone,
+                                                              static_intro, scrolling_message, next_message_hint,
+                                                              duration_seconds, source_info);
 
   if (success) {
     ESP_LOGI(TAG, "Successfully updated message in database. Refreshing cache.");
     // Refresh cache and update HA sensor
     if (refresh_message_cache()) {
-        ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
-        update_ha_queue_size();
+      ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
+      update_ha_queue_size();
     } else {
-        ESP_LOGE(TAG, "Failed to refresh message cache after updating persistent message.");
-        // Message updated in DB, but cache might be stale. Continue anyway.
+      ESP_LOGE(TAG, "Failed to refresh message cache after updating persistent message.");
+      // Message updated in DB, but cache might be stale. Continue anyway.
     }
   } else {
     ESP_LOGE(TAG, "Failed to update message in database.");
@@ -334,9 +323,9 @@ bool B48DisplayController::delete_persistent_message(int message_id) {
   if (success) {
     // Refresh cache and update HA sensor
     if (refresh_message_cache()) {
-        update_ha_queue_size();
+      update_ha_queue_size();
     } else {
-        ESP_LOGE(TAG, "Failed to refresh message cache after deleting persistent message.");
+      ESP_LOGE(TAG, "Failed to refresh message cache after deleting persistent message.");
     }
   }
   return success;
@@ -344,45 +333,47 @@ bool B48DisplayController::delete_persistent_message(int message_id) {
 
 // New method to wipe and reinitialize the database and clear RAM cache
 bool B48DisplayController::wipe_and_reinitialize_database() {
-    ESP_LOGW(TAG, "Wiping and reinitializing database...");
-    std::lock_guard<std::mutex> lock(this->message_mutex_); // Lock access to message caches
+  ESP_LOGW(TAG, "Wiping and reinitializing database...");
+  // Only lock when modifying ephemeral cache, avoid holding lock over DB operations
 
-    if (!this->db_manager_) {
-        ESP_LOGE(TAG, "Database manager is not initialized for wipe_and_reinitialize_database");
-        return false;
-    }
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Database manager is not initialized for wipe_and_reinitialize_database");
+    return false;
+  }
 
-    // 1. Wipe the database (drops and recreates table)
-    if (!this->db_manager_->wipe_database()) {
-        ESP_LOGE(TAG, "Failed to wipe database.");
-        return false; // Don't proceed if wipe fails
-    }
+  // 1. Wipe the database (drops and recreates table)
+  if (!this->db_manager_->wipe_database()) {
+    ESP_LOGE(TAG, "Failed to wipe database.");
+    return false;  // Don't proceed if wipe fails
+  }
 
-    // 2. Reinitialize the database (recreates schema)
-    if (!this->db_manager_->initialize()) {
-        ESP_LOGE(TAG, "Failed to re-initialize database after wipe.");
-        // Mark component as failed maybe?
-        this->mark_failed(); 
-        return false;
-    }
+  // 2. Reinitialize the database (recreates schema)
+  if (!this->db_manager_->initialize()) {
+    ESP_LOGE(TAG, "Failed to re-initialize database after wipe.");
+    this->mark_failed();
+    return false;
+  }
 
-    // 3. Clear ephemeral message cache in RAM
+  // 3. Clear ephemeral message cache in RAM under lock
+  {
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
     this->ephemeral_messages_.clear();
     ESP_LOGD(TAG, "Cleared ephemeral message cache.");
+  }
 
-    // 4. Refresh persistent cache (should be empty now)
-    if (refresh_message_cache()) { 
-        ESP_LOGD(TAG, "Refreshed message cache after wipe.");
-    } else {
-        ESP_LOGE(TAG, "Failed to refresh message cache after wipe.");
-        // Non-fatal, but indicates an issue
-    }
+  // 4. Refresh persistent cache (should be empty now)
+  if (refresh_message_cache()) {
+    ESP_LOGD(TAG, "Refreshed message cache after wipe.");
+  } else {
+    ESP_LOGE(TAG, "Failed to refresh message cache after wipe.");
+    // Non-fatal, but indicates an issue
+  }
 
-    // 5. Update HA queue size sensor
-    update_ha_queue_size();
-    
-    ESP_LOGW(TAG, "Database wipe and reinitialization complete.");
-    return true;
+  // 5. Update HA queue size sensor
+  update_ha_queue_size();
+
+  ESP_LOGW(TAG, "Database wipe and reinitialization complete.");
+  return true;
 }
 
 // --- Internal HA State Update ---
@@ -399,47 +390,26 @@ void B48DisplayController::update_ha_queue_size() {
   }
 }
 
-// --- Database Methods (Modified) ---
-
 bool B48DisplayController::refresh_message_cache() {
-  std::lock_guard<std::mutex> lock(this->message_mutex_);
-
+  // Ensure database manager is initialized
   if (!this->db_manager_) {
     ESP_LOGE(TAG, "Database manager is not initialized in refresh_message_cache");
     return false;
   }
 
-  // Clear the existing persistent cache
-  this->persistent_messages_.clear();
+  // Perform database query outside of mutex lock to avoid blocking other tasks
+  ESP_LOGD(TAG, "Querying persistent messages from database outside lock...");
+  auto new_persistent = this->db_manager_->get_active_persistent_messages();
+  ESP_LOGD(TAG, "Database returned %d persistent messages", new_persistent.size());
 
-  // Get messages from database manager
-  this->persistent_messages_ = this->db_manager_->get_active_persistent_messages();
-
-  ESP_LOGI(TAG, "Refreshed persistent message cache, loaded %d messages", this->persistent_messages_.size());
-
-  // Log detailed information about each message for debugging
-  for (size_t i = 0; i < this->persistent_messages_.size(); i++) {
-    const auto& msg = this->persistent_messages_[i];
-    ESP_LOGD(TAG, "Message[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s%s' (len=%zu)", 
-             i, msg->message_id, msg->priority, msg->line_number, msg->tarif_zone, 
-             msg->scrolling_message.substr(0, 30).c_str(),
-             msg->scrolling_message.length() > 30 ? "..." : "",
-             msg->scrolling_message.length());
+  // Now update the cache under lock
+  {  
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
+    this->persistent_messages_ = std::move(new_persistent);
   }
 
-  // Sort persistent messages by priority (DESC) and then ID (ASC) - DB query already does this
-  // Optional: Verify sort order if needed
-  /*
-  std::sort(this->persistent_messages_.begin(), this->persistent_messages_.end(),
-            [](const std::shared_ptr<MessageEntry>& a, const std::shared_ptr<MessageEntry>& b) {
-              if (a->priority != b->priority) {
-                return a->priority > b->priority; // Higher priority first
-              }
-              return a->message_id < b->message_id; // Lower ID (older) first within same priority
-            });
-  */
-
-  // HA queue size is updated separately after DB operations trigger a refresh
+  // Update HA sensor with new queue size
+  update_ha_queue_size();
   return true;
 }
 
@@ -455,12 +425,12 @@ void B48DisplayController::check_expired_messages() {
     ESP_LOGI(TAG, "Expired %d persistent messages in database", persistent_expired);
     // Refresh cache and update HA sensor if changes occurred
     if (refresh_message_cache()) {
-        update_ha_queue_size();
+      update_ha_queue_size();
     } else {
-        ESP_LOGE(TAG, "Failed to refresh cache after expiring persistent messages.");
+      ESP_LOGE(TAG, "Failed to refresh cache after expiring persistent messages.");
     }
   } else if (persistent_expired < 0) {
-      ESP_LOGE(TAG, "Error checking persistent message expiry.");
+    ESP_LOGE(TAG, "Error checking persistent message expiry.");
   }
 
   // --- Check and expire ephemeral messages in RAM ---
@@ -471,14 +441,14 @@ void B48DisplayController::check_expired_messages() {
   // Remove expired ephemeral messages based on TTL or display count
   this->ephemeral_messages_.erase(
       std::remove_if(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
-                     [&](const std::shared_ptr<MessageEntry>& msg) {
+                     [&](const std::shared_ptr<MessageEntry> &msg) {
                        bool expired = false;
                        // Check TTL
                        if (msg->expiry_time > 0 && msg->expiry_time <= now) {
                          expired = true;
                        }
                        // Check display count (if not TTL expired)
-                       if (!expired && msg->remaining_displays == 0) { // 0 means used up, -1 means infinite
+                       if (!expired && msg->remaining_displays == 0) {  // 0 means used up, -1 means infinite
                          expired = true;
                        }
                        if (expired) {
@@ -494,8 +464,6 @@ void B48DisplayController::check_expired_messages() {
   }
 }
 
-// --- Display Algorithm Methods (potentially need adjustments for ephemeral messages) ---
-
 std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
   std::lock_guard<std::mutex> lock(this->message_mutex_);
   time_t now = time(nullptr);
@@ -505,53 +473,55 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
   bool has_database = (this->db_manager_ != nullptr);
 
   // 1. Check Ephemeral Messages (highest priority first due to pre-sorting)
-  for (const auto& msg : this->ephemeral_messages_) {
-      // Basic checks (should already be handled by expiry check, but good for safety)
-      if (msg->expiry_time > 0 && msg->expiry_time <= now) continue;
-      if (msg->remaining_displays == 0) continue;
+  for (const auto &msg : this->ephemeral_messages_) {
+    // Basic checks (should already be handled by expiry check, but good for safety)
+    if (msg->expiry_time > 0 && msg->expiry_time <= now)
+      continue;
+    if (msg->remaining_displays == 0)
+      continue;
 
-      // Check minimum time between repeats (if applicable, use main setting for now)
-      if (now - msg->last_display_time < this->min_seconds_between_repeats_) {
-          continue;
-      }
+    // Check minimum time between repeats (if applicable, use main setting for now)
+    if (now - msg->last_display_time < this->min_seconds_between_repeats_) {
+      continue;
+    }
 
-      selected_message = msg;
-      ESP_LOGD(TAG, "Selected ephemeral message (Prio: %d)", selected_message->priority);
-      break; // Select the highest priority available ephemeral message
+    selected_message = msg;
+    ESP_LOGD(TAG, "Selected ephemeral message (Prio: %d)", selected_message->priority);
+    break;  // Select the highest priority available ephemeral message
   }
 
   // 2. If no suitable ephemeral message and database is available, check Persistent Messages
   if (!selected_message && has_database) {
-      // Iterate through persistent messages (already sorted by priority DESC, id ASC)
-      // Find the next message to display, considering rotation and min repeat interval
-      
-      static size_t last_persistent_index = 0; 
-      size_t current_index = last_persistent_index;
-      for (size_t i = 0; i < this->persistent_messages_.size(); ++i) {
-          current_index = (last_persistent_index + i) % this->persistent_messages_.size();
-          const auto& msg = this->persistent_messages_[current_index];
-          
-          // Check minimum time between repeats
-          auto it = last_display_times_.find(msg->message_id);
-          time_t last_shown = (it != last_display_times_.end()) ? it->second : 0;
+    // Iterate through persistent messages (already sorted by priority DESC, id ASC)
+    // Find the next message to display, considering rotation and min repeat interval
 
-          if (now - last_shown >= this->min_seconds_between_repeats_) {
-              selected_message = msg;
-              last_persistent_index = (current_index + 1) % this->persistent_messages_.size(); // Move to next for next time
-              ESP_LOGD(TAG, "Selected persistent message ID: %d (Prio: %d)", selected_message->message_id, selected_message->priority);
-              break;
-          }
+    static size_t last_persistent_index = 0;
+    size_t current_index = last_persistent_index;
+    for (size_t i = 0; i < this->persistent_messages_.size(); ++i) {
+      current_index = (last_persistent_index + i) % this->persistent_messages_.size();
+      const auto &msg = this->persistent_messages_[current_index];
+
+      // Check minimum time between repeats
+      auto it = last_display_times_.find(msg->message_id);
+      time_t last_shown = (it != last_display_times_.end()) ? it->second : 0;
+
+      if (now - last_shown >= this->min_seconds_between_repeats_) {
+        selected_message = msg;
+        last_persistent_index = (current_index + 1) % this->persistent_messages_.size();  // Move to next for next time
+        ESP_LOGD(TAG, "Selected persistent message ID: %d (Prio: %d)", selected_message->message_id,
+                 selected_message->priority);
+        break;
       }
+    }
   }
 
   // 3. If still no message, return nullptr (will trigger fallback)
   if (!selected_message) {
-      ESP_LOGV(TAG, "No suitable message found for display.");
+    ESP_LOGV(TAG, "No suitable message found for display.");
   }
 
   return selected_message;
 }
-
 
 // --- Other methods (calculate_display_duration, update_message_display_stats, etc.) ---
 // Need to be updated to handle ephemeral messages correctly (e.g., decrement remaining_displays)
@@ -559,53 +529,48 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 int B48DisplayController::calculate_display_duration(const std::shared_ptr<MessageEntry> &msg) {
   // Simple duration calculation (example)
   // Could be based on message length, priority, etc.
-  if (!msg) return 5; // Default duration if msg is null
+  if (!msg)
+    return 5;  // Default duration if msg is null
 
-  int base_duration = 5; // Base seconds
-  int chars_per_second = 5; // Estimated scroll speed
+  int base_duration = 5;     // Base seconds
+  int chars_per_second = 5;  // Estimated scroll speed
   int length_duration = msg->scrolling_message.length() / chars_per_second;
 
   // Use a simple heuristic: longer messages display for longer, up to a max
-  return std::max(base_duration, std::min(length_duration, 20)); // E.g., 5-20 seconds
+  return std::max(base_duration, std::min(length_duration, 20));  // E.g., 5-20 seconds
 }
 
 void B48DisplayController::update_message_display_stats(const std::shared_ptr<MessageEntry> &msg) {
-  if (!msg) return;
+  if (!msg)
+    return;
 
   time_t now = time(nullptr);
 
   if (msg->is_ephemeral) {
-      std::lock_guard<std::mutex> lock(this->message_mutex_); // Lock as we modify ephemeral list potentially
-      msg->last_display_time = now;
-      if (msg->remaining_displays > 0) { // Only decrement if it's a finite count
-          msg->remaining_displays--;
-          ESP_LOGD(TAG, "Decremented display count for ephemeral message (Remaining: %d)", msg->remaining_displays);
-      }
-      // Check if expired now due to count
-      if (msg->remaining_displays == 0) {
-          ESP_LOGI(TAG, "Ephemeral message reached display count limit, will be removed.");
-          // Mark for removal in the next check_expired_messages cycle
-      }
+    std::lock_guard<std::mutex> lock(this->message_mutex_);  // Lock as we modify ephemeral list potentially
+    msg->last_display_time = now;
+    if (msg->remaining_displays > 0) {  // Only decrement if it's a finite count
+      msg->remaining_displays--;
+      ESP_LOGD(TAG, "Decremented display count for ephemeral message (Remaining: %d)", msg->remaining_displays);
+    }
+    // Check if expired now due to count
+    if (msg->remaining_displays == 0) {
+      ESP_LOGI(TAG, "Ephemeral message reached display count limit, will be removed.");
+      // Mark for removal in the next check_expired_messages cycle
+    }
   } else {
-      // Update last display time for persistent messages (used for repeat delay)
-      last_display_times_[msg->message_id] = now;
-      // DB update for display count/time is not part of this schema
-      ESP_LOGV(TAG, "Updated last display time for persistent message ID %d", msg->message_id);
+    // Update last display time for persistent messages (used for repeat delay)
+    last_display_times_[msg->message_id] = now;
+    // DB update for display count/time is not part of this schema
+    ESP_LOGV(TAG, "Updated last display time for persistent message ID %d", msg->message_id);
   }
 }
 
-// ... (send_commands_for_message, BUSE120 methods, state machine methods remain largely the same) ...
-// Make sure send_commands_for_message uses the fields from the MessageEntry struct correctly.
-
 // --- BUSE120 Protocol Methods ---
 
-void B48DisplayController::send_line_number(int line) {
-  this->serial_protocol_.send_line_number(line);
-}
+void B48DisplayController::send_line_number(int line) { this->serial_protocol_.send_line_number(line); }
 
-void B48DisplayController::send_tarif_zone(int zone) {
-  this->serial_protocol_.send_tarif_zone(zone);
-}
+void B48DisplayController::send_tarif_zone(int zone) { this->serial_protocol_.send_tarif_zone(zone); }
 
 void B48DisplayController::send_static_intro(const std::string &text) {
   this->serial_protocol_.send_static_intro(text);
@@ -622,12 +587,12 @@ void B48DisplayController::send_next_message_hint(const std::string &text) {
 void B48DisplayController::send_time_update() {
   // Ensure current_time_ is updated
   if (this->current_time_ == 0) {
-      // If we don't have a valid time, maybe try to get it now? 
-      // Or simply skip? For now, skipping.
-      // ESP_LOGW(TAG, "Cannot send time update, current time unknown.");
-      // return; 
-      // Let's get the current time if not set
-      time(&this->current_time_); 
+    // If we don't have a valid time, maybe try to get it now?
+    // Or simply skip? For now, skipping.
+    // ESP_LOGW(TAG, "Cannot send time update, current time unknown.");
+    // return;
+    // Let's get the current time if not set
+    time(&this->current_time_);
   }
 
   // Convert time_t to struct tm to extract hour and minute
@@ -644,103 +609,109 @@ void B48DisplayController::send_time_update() {
   this->last_time_sync_ = millis();
 }
 
-void B48DisplayController::send_invert_command() {
-    this->serial_protocol_.send_invert_command();
-}
+void B48DisplayController::send_invert_command() { this->serial_protocol_.send_invert_command(); }
 
-void B48DisplayController::switch_to_cycle(int cycle) {
-    this->serial_protocol_.switch_to_cycle(cycle);
-}
+void B48DisplayController::switch_to_cycle(int cycle) { this->serial_protocol_.switch_to_cycle(cycle); }
 
 void B48DisplayController::send_commands_for_message(const std::shared_ptr<MessageEntry> &msg) {
-    if (!msg) {
-        ESP_LOGW(TAG, "send_commands_for_message called with null message");
-        return;
-    }
-    ESP_LOGD(TAG, "Sending commands for message (Prio: %d, ID: %d, Ephem: %d): %s%s (len=%zu)",
-             msg->priority, msg->message_id, msg->is_ephemeral,
-             msg->scrolling_message.substr(0, 30).c_str(),
-             msg->scrolling_message.length() > 30 ? "..." : "",
-             msg->scrolling_message.length());
+  if (!msg) {
+    ESP_LOGW(TAG, "send_commands_for_message called with null message");
+    return;
+  }
+  ESP_LOGD(TAG, "Sending commands for message (Prio: %d, ID: %d, Ephem: %d): %s%s (len=%zu)", msg->priority,
+           msg->message_id, msg->is_ephemeral, msg->scrolling_message.substr(0, 30).c_str(),
+           msg->scrolling_message.length() > 30 ? "..." : "", msg->scrolling_message.length());
 
-    // Example sequence based on MessageEntry fields
-    send_line_number(msg->line_number);
-    send_tarif_zone(msg->tarif_zone);
-    send_static_intro(msg->static_intro);         // Send zI command
-    send_scrolling_message(msg->scrolling_message); // Send zM command
-    send_next_message_hint(msg->next_message_hint); // Send v command
-    // Add delay if needed between commands based on hardware requirements
+  send_line_number(msg->line_number);
+  yield();
+  esp_task_wdt_reset();
+
+  send_tarif_zone(msg->tarif_zone);
+  yield();
+  esp_task_wdt_reset();
+
+  send_static_intro(msg->static_intro);
+  yield();
+  esp_task_wdt_reset();
+
+  send_scrolling_message(msg->scrolling_message);
+  yield();
+  esp_task_wdt_reset();
+
+  send_next_message_hint(msg->next_message_hint);
+  yield();
+  esp_task_wdt_reset();
 }
 
 // --- State Machine Methods ---
 
 void B48DisplayController::run_transition_mode() {
-    // Simple transition: wait, then prepare next message
-    unsigned long time_in_state = millis() - this->state_change_time_;
-    if (time_in_state >= (unsigned long)this->transition_duration_ * 1000) {
-        ESP_LOGV(TAG, "Transition complete, moving to MESSAGE_PREPARATION");
-        this->state_ = MESSAGE_PREPARATION;
-        this->state_change_time_ = millis();
-        // Optionally send a blanking command or next_message_hint here
-    }
+  // Simple transition: wait, then prepare next message
+  unsigned long time_in_state = millis() - this->state_change_time_;
+  if (time_in_state >= (unsigned long) this->transition_duration_ * 1000) {
+    ESP_LOGV(TAG, "Transition complete, moving to MESSAGE_PREPARATION");
+    this->state_ = MESSAGE_PREPARATION;
+    this->state_change_time_ = millis();
+    // Optionally send a blanking command or next_message_hint here
+  }
 }
 
 void B48DisplayController::run_message_preparation() {
-    ESP_LOGV(TAG, "Preparing next message...");
-    this->current_message_ = select_next_message();
+  ESP_LOGV(TAG, "Preparing next message...");
+  this->current_message_ = select_next_message();
 
-    if (this->current_message_) {
-        send_commands_for_message(this->current_message_);
-        this->state_ = DISPLAY_MESSAGE;
-        ESP_LOGD(TAG, "Message prepared, moving to DISPLAY_MESSAGE");
-    } else {
-        display_fallback_message(); // Display fallback if no message available
-        this->state_ = DISPLAY_MESSAGE; // Still move to display state for fallback
-        ESP_LOGD(TAG, "No message selected, displaying fallback, moving to DISPLAY_MESSAGE");
-    }
-    this->state_change_time_ = millis();
+  if (this->current_message_) {
+    send_commands_for_message(this->current_message_);
+    this->state_ = DISPLAY_MESSAGE;
+    ESP_LOGD(TAG, "Message prepared, moving to DISPLAY_MESSAGE");
+  } else {
+    display_fallback_message();      // Display fallback if no message available
+    this->state_ = DISPLAY_MESSAGE;  // Still move to display state for fallback
+    ESP_LOGD(TAG, "No message selected, displaying fallback, moving to DISPLAY_MESSAGE");
+  }
+  this->state_change_time_ = millis();
 }
 
 void B48DisplayController::run_display_message() {
-    int display_duration_ms = 5000; // Default if current_message_ is null
-    if (this->current_message_) {
-        display_duration_ms = calculate_display_duration(this->current_message_) * 1000;
-    }
+  int display_duration_ms = 5000;  // Default if current_message_ is null
+  if (this->current_message_) {
+    display_duration_ms = calculate_display_duration(this->current_message_) * 1000;
+  }
 
-    unsigned long time_in_state = millis() - this->state_change_time_;
-    if (time_in_state >= (unsigned long)display_duration_ms) {
-        ESP_LOGV(TAG, "Display duration ended, updating stats and moving to TRANSITION_MODE");
-        update_message_display_stats(this->current_message_); // Update stats before transitioning
-        this->current_message_ = nullptr; // Clear current message
-        this->state_ = TRANSITION_MODE;
-        this->state_change_time_ = millis();
-    }
-    // Display logic runs implicitly via the sent commands
+  unsigned long time_in_state = millis() - this->state_change_time_;
+  if (time_in_state >= (unsigned long) display_duration_ms) {
+    ESP_LOGV(TAG, "Display duration ended, updating stats and moving to TRANSITION_MODE");
+    update_message_display_stats(this->current_message_);  // Update stats before transitioning
+    this->current_message_ = nullptr;                      // Clear current message
+    this->state_ = TRANSITION_MODE;
+    this->state_change_time_ = millis();
+  }
+  // Display logic runs implicitly via the sent commands
 }
 
 void B48DisplayController::display_fallback_message() {
-    // Define a simple fallback message
-    auto fallback_msg = std::make_shared<MessageEntry>();
-    fallback_msg->is_ephemeral = true; // Treat fallback as ephemeral
-    fallback_msg->message_id = -1;
-    fallback_msg->line_number = 48;
-    fallback_msg->tarif_zone = 0;
-    fallback_msg->static_intro = "Base48";
-    fallback_msg->scrolling_message = "--.-"; // Placeholder/Idle message
-    fallback_msg->next_message_hint = "Idle";
-    fallback_msg->priority = 0; // Low priority
+  // Define a simple fallback message
+  auto fallback_msg = std::make_shared<MessageEntry>();
+  fallback_msg->is_ephemeral = true;  // Treat fallback as ephemeral
+  fallback_msg->message_id = -1;
+  fallback_msg->line_number = 48;
+  fallback_msg->tarif_zone = 0;
+  fallback_msg->static_intro = "Base48";
+  fallback_msg->scrolling_message = "--.-";  // Placeholder/Idle message
+  fallback_msg->next_message_hint = "Idle";
+  fallback_msg->priority = 0;  // Low priority
 
-    ESP_LOGD(TAG, "Displaying fallback message.");
-    send_commands_for_message(fallback_msg);
-    // Do not update stats for fallback message
+  ESP_LOGD(TAG, "Displaying fallback message.");
+  send_commands_for_message(fallback_msg);
+  // Do not update stats for fallback message
 }
 
 void B48DisplayController::check_for_emergency_messages() {
-    // Placeholder for emergency logic (e.g., checking a specific ephemeral message flag)
-    // If an emergency message needs to be displayed immediately, you might:
-    // 1. Force this->current_message_ to the emergency message.
-    // 2. Send commands immediately.
-    // 3. Reset the state machine to DISPLAY_MESSAGE with a longer duration.
+  // Placeholder for emergency logic (e.g., checking a specific ephemeral message flag)
+  // If an emergency message needs to be displayed immediately, you might:
+  // 1. Force this->current_message_ to the emergency message.
+  // 2. Send commands immediately.
+  // 3. Reset the state machine to DISPLAY_MESSAGE with a longer duration.
 }
 
 void B48DisplayController::dump_database_for_diagnostics() {
@@ -748,21 +719,19 @@ void B48DisplayController::dump_database_for_diagnostics() {
     ESP_LOGE(TAG, "Cannot dump database - database manager is not initialized");
     return;
   }
-  
+
   ESP_LOGI(TAG, "Dumping database for diagnostics");
   this->db_manager_->dump_all_messages();
-  
+
   // Also dump the message cache state
   {
     std::lock_guard<std::mutex> lock(this->message_mutex_);
     ESP_LOGI(TAG, "Current message cache state: %d persistent messages in cache", this->persistent_messages_.size());
     for (size_t i = 0; i < this->persistent_messages_.size(); i++) {
-      const auto& msg = this->persistent_messages_[i];
-      ESP_LOGI(TAG, "Cache[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s%s' (len=%zu)", 
-               i, msg->message_id, msg->priority, msg->line_number, msg->tarif_zone, 
-               msg->scrolling_message.substr(0, 30).c_str(),
-               msg->scrolling_message.length() > 30 ? "..." : "",
-               msg->scrolling_message.length());
+      const auto &msg = this->persistent_messages_[i];
+      ESP_LOGI(TAG, "Cache[%d]: ID=%d, Priority=%d, Line=%d, Zone=%d, Text='%s%s' (len=%zu)", i, msg->message_id,
+               msg->priority, msg->line_number, msg->tarif_zone, msg->scrolling_message.substr(0, 30).c_str(),
+               msg->scrolling_message.length() > 30 ? "..." : "", msg->scrolling_message.length());
     }
   }
 }
@@ -774,14 +743,14 @@ void B48DisplayController::start_time_test_mode() {
     ESP_LOGW(TAG, "Time test mode already active");
     return;
   }
-  
+
   ESP_LOGI(TAG, "Starting time test mode");
   this->time_test_mode_active_ = true;
   this->current_time_test_value_ = 0;
   this->last_time_test_update_ = millis();
   this->state_ = TIME_TEST_MODE;
   this->state_change_time_ = millis();
-  
+
   // Send intro message
   auto test_msg = std::make_shared<MessageEntry>();
   test_msg->message_id = -1;
@@ -792,9 +761,9 @@ void B48DisplayController::start_time_test_mode() {
   test_msg->next_message_hint = "Testing";
   test_msg->priority = 100;
   send_commands_for_message(test_msg);
-  
+
   // Prepare for first time value
-  switch_to_cycle(6); // Make sure we're in the main cycle
+  switch_to_cycle(6);  // Make sure we're in the main cycle
 }
 
 void B48DisplayController::stop_time_test_mode() {
@@ -802,14 +771,14 @@ void B48DisplayController::stop_time_test_mode() {
     ESP_LOGW(TAG, "Time test mode not active");
     return;
   }
-  
+
   ESP_LOGI(TAG, "Stopping time test mode");
   this->time_test_mode_active_ = false;
-  
+
   // Return to normal operation
   this->state_ = TRANSITION_MODE;
   this->state_change_time_ = millis();
-  
+
   // Send completion message
   auto completion_msg = std::make_shared<MessageEntry>();
   completion_msg->message_id = -1;
@@ -830,39 +799,38 @@ void B48DisplayController::run_time_test_mode() {
     this->state_change_time_ = millis();
     return;
   }
-  
+
   // Check if we completed all time values
   if (this->current_time_test_value_ > 2459) {
     ESP_LOGI(TAG, "Time test complete, all values sent");
     stop_time_test_mode();
     return;
   }
-  
+
   // Send time update at regular intervals
   unsigned long now = millis();
   if (now - this->last_time_test_update_ >= TIME_TEST_INTERVAL_MS) {
     // Calculate current time value (hour and minute)
     int hour = this->current_time_test_value_ / 100;
     int minute = this->current_time_test_value_ % 100;
-    
+
     // Log the test progress periodically
     if (this->current_time_test_value_ % 100 == 0) {
       ESP_LOGI(TAG, "Time test progress: u%04d", this->current_time_test_value_);
     } else {
       ESP_LOGD(TAG, "Time test: u%04d", this->current_time_test_value_);
     }
-    
+
     // Send the time value directly
     this->serial_protocol_.send_time_update(hour, minute);
     switch_to_cycle(0);
     switch_to_cycle(6);
     yield();
     esp_task_wdt_reset();
-    
-    
+
     // Increment the value for next iteration
     this->current_time_test_value_++;
-    
+
     // Update the last update time
     this->last_time_test_update_ = now;
   }
@@ -872,24 +840,24 @@ void B48DisplayController::run_time_test_mode() {
 
 bool B48DisplayController::initialize_filesystem() {
   // Log ESP32 heap information first
-  ESP_LOGI(TAG, "ESP32 Memory - Free heap: %u bytes, Minimum free heap: %u bytes", 
-           ESP.getFreeHeap(), ESP.getMinFreeHeap());
-  
+  ESP_LOGI(TAG, "ESP32 Memory - Free heap: %u bytes, Minimum free heap: %u bytes", ESP.getFreeHeap(),
+           ESP.getMinFreeHeap());
+
   ESP_LOGI(TAG, "Initializing LittleFS...");
-  
+
   // Find the partition labeled "spiffs" or similar in the partition table
   esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
   if (it == NULL) {
     ESP_LOGE(TAG, "Failed to find SPIFFS partition!");
     return false;
   }
-  
-  const esp_partition_t* spiffs_partition = esp_partition_get(it);
+
+  const esp_partition_t *spiffs_partition = esp_partition_get(it);
   esp_partition_iterator_release(it);
-  
-  ESP_LOGI(TAG, "Found SPIFFS partition: label='%s', size=%u bytes (%.1f KB)",
-           spiffs_partition->label, spiffs_partition->size, spiffs_partition->size/1024.0f);
-  
+
+  ESP_LOGI(TAG, "Found SPIFFS partition: label='%s', size=%u bytes (%.1f KB)", spiffs_partition->label,
+           spiffs_partition->size, spiffs_partition->size / 1024.0f);
+
   // Try to mount without formatting first
   if (!LittleFS.begin(false)) {
     ESP_LOGW(TAG, "Initial LittleFS mount failed. Trying format=true...");
@@ -901,37 +869,36 @@ bool B48DisplayController::initialize_filesystem() {
   } else {
     ESP_LOGI(TAG, "LittleFS mounted successfully without formatting.");
   }
-  
+
   // Get and log detailed storage information
   size_t total_bytes = LittleFS.totalBytes();
   size_t used_bytes = LittleFS.usedBytes();
   size_t free_bytes = total_bytes - used_bytes;
   float used_percent = (used_bytes * 100.0f) / total_bytes;
-  
+
   ESP_LOGI(TAG, "LittleFS storage:");
-  ESP_LOGI(TAG, "  Total space: %zu bytes (%.1f KB)", total_bytes, total_bytes/1024.0f);
-  ESP_LOGI(TAG, "  Used space:  %zu bytes (%.1f KB)", used_bytes, used_bytes/1024.0f);
-  ESP_LOGI(TAG, "  Free space:  %zu bytes (%.1f KB)", free_bytes, free_bytes/1024.0f);
+  ESP_LOGI(TAG, "  Total space: %zu bytes (%.1f KB)", total_bytes, total_bytes / 1024.0f);
+  ESP_LOGI(TAG, "  Used space:  %zu bytes (%.1f KB)", used_bytes, used_bytes / 1024.0f);
+  ESP_LOGI(TAG, "  Free space:  %zu bytes (%.1f KB)", free_bytes, free_bytes / 1024.0f);
   ESP_LOGI(TAG, "  Usage:       %.1f%%", used_percent);
-  
-  ESP_LOGI(TAG, "  Partition:   %u bytes (%.1f KB)", spiffs_partition->size, spiffs_partition->size/1024.0f);
-  
+
+  ESP_LOGI(TAG, "  Partition:   %u bytes (%.1f KB)", spiffs_partition->size, spiffs_partition->size / 1024.0f);
+
   // If total_bytes is significantly smaller than partition size, something is wrong
   if (total_bytes < spiffs_partition->size * 0.8) {
-    ESP_LOGW(TAG, "LittleFS is only seeing %zu bytes when partition is %u bytes!",
-             total_bytes, spiffs_partition->size);
+    ESP_LOGW(TAG, "LittleFS is only seeing %zu bytes when partition is %u bytes!", total_bytes, spiffs_partition->size);
     ESP_LOGW(TAG, "This may indicate a configuration issue. Will continue with available space.");
   }
-  
+
   // If this is a dedicated partition for SQLite, inform about expectations
   ESP_LOGI(TAG, "SQLite typically needs 30-50KB of free contiguous space");
-  
+
   // Only check if we have minimum required space - lower threshold to work with available space
-  if (free_bytes < 16384) { // Changed from 32768 (32KB) to 16384 (16KB)
+  if (free_bytes < 16384) {  // Changed from 32768 (32KB) to 16384 (16KB)
     ESP_LOGE(TAG, "Not enough free space for database (need at least 16KB). Consider increasing partition size.");
     return false;
   }
-  
+
   // List files in the root directory to see what's taking up space
   ESP_LOGI(TAG, "Files in LittleFS root:");
   File root = LittleFS.open("/");
@@ -942,14 +909,15 @@ bool B48DisplayController::initialize_filesystem() {
     while (file) {  // Remove the limit to show all files
       size_t file_size = file.size();
       total_listed_size += file_size;
-      ESP_LOGI(TAG, "  %s: %zu bytes (%.1f KB)", file.name(), file_size, file_size/1024.0f);
+      ESP_LOGI(TAG, "  %s: %zu bytes (%.1f KB)", file.name(), file_size, file_size / 1024.0f);
       file = root.openNextFile();
       file_count++;
     }
-    ESP_LOGI(TAG, "Total: %d files using %zu bytes (%.1f KB)", file_count, total_listed_size, total_listed_size/1024.0f);
+    ESP_LOGI(TAG, "Total: %d files using %zu bytes (%.1f KB)", file_count, total_listed_size,
+             total_listed_size / 1024.0f);
   }
   root.close();
-  
+
   return true;
 }
 
@@ -959,21 +927,21 @@ bool B48DisplayController::check_database_prerequisites() {
     ESP_LOGE(TAG, "Database path is empty! Running without database.");
     return false;
   }
-  
+
   return true;
 }
 
 bool B48DisplayController::initialize_database() {
   ESP_LOGI(TAG, "Creating database manager with path: '%s'", this->database_path_.c_str());
-  
+
   // Check if the database file already exists and log its size
   if (LittleFS.exists(this->database_path_.c_str())) {
     File db_file = LittleFS.open(this->database_path_.c_str(), "r");
     if (db_file) {
       size_t file_size = db_file.size();
       db_file.close();
-      ESP_LOGI(TAG, "Existing database file size: %zu bytes (%.1f KB)", file_size, file_size/1024.0f);
-      
+      ESP_LOGI(TAG, "Existing database file size: %zu bytes (%.1f KB)", file_size, file_size / 1024.0f);
+
       // Only delete if the file is suspiciously small (likely corrupt)
       if (file_size < 512) {
         ESP_LOGW(TAG, "Database file exists but is very small, might be corrupt. Removing...");
@@ -987,22 +955,22 @@ bool B48DisplayController::initialize_database() {
   } else {
     ESP_LOGI(TAG, "No existing database file found, will create new");
   }
-  
+
   // Create the database manager
   db_manager_.reset(new B48DatabaseManager(this->database_path_));
-  
+
   // Try to initialize the database with retries
   for (int retry = 0; retry < 3; retry++) {
     if (retry > 0) {
       ESP_LOGW(TAG, "Retrying database initialization (attempt %d of 3)...", retry + 1);
-      
+
       // Log memory status before retry
       size_t total_bytes = LittleFS.totalBytes();
       size_t used_bytes = LittleFS.usedBytes();
       size_t free_bytes = total_bytes - used_bytes;
-      ESP_LOGI(TAG, "Before retry: %.1f KB free in LittleFS, %u bytes free in heap", 
-               free_bytes/1024.0f, ESP.getFreeHeap());
-      
+      ESP_LOGI(TAG, "Before retry: %.1f KB free in LittleFS, %u bytes free in heap", free_bytes / 1024.0f,
+               ESP.getFreeHeap());
+
       // If second retry fails, try to delete the file before final attempt
       if (retry == 2) {
         ESP_LOGW(TAG, "Final retry attempt - trying to remove database file first...");
@@ -1014,13 +982,13 @@ bool B48DisplayController::initialize_database() {
           }
         }
       }
-      
-      delay(1000); // Wait a second before retrying
+
+      delay(1000);  // Wait a second before retrying
     }
-    
+
     // Attempt initialization
     bool success = this->db_manager_->initialize();
-    
+
     if (success) {
       // Log final database file size on success
       if (LittleFS.exists(this->database_path_.c_str())) {
@@ -1028,21 +996,20 @@ bool B48DisplayController::initialize_database() {
         if (db_file) {
           size_t file_size = db_file.size();
           db_file.close();
-          ESP_LOGI(TAG, "Successfully created database file: %zu bytes (%.1f KB)", 
-                   file_size, file_size/1024.0f);
+          ESP_LOGI(TAG, "Successfully created database file: %zu bytes (%.1f KB)", file_size, file_size / 1024.0f);
         }
       }
-      
+
       ESP_LOGI(TAG, "Database initialized successfully!");
       return true;
     } else {
       ESP_LOGE(TAG, "Failed to initialize the database manager (attempt %d)", retry + 1);
     }
   }
-  
+
   // If we get here, all attempts failed
   ESP_LOGE(TAG, "All database initialization attempts failed! Running without database.");
-  db_manager_.reset(nullptr); // Clean up failed DB manager
+  db_manager_.reset(nullptr);  // Clean up failed DB manager
   return false;
 }
 
@@ -1050,16 +1017,16 @@ bool B48DisplayController::handle_database_wipe() {
   ESP_LOGW(TAG, "Configuration has wipe_database_on_boot enabled. Wiping database...");
   if (!db_manager_->wipe_database()) {
     ESP_LOGE(TAG, "Failed to wipe database");
-    return true; // Not a fatal error, continue with database (even if wipe failed)
+    return true;  // Not a fatal error, continue with database (even if wipe failed)
   }
-  
+
   // Need to recreate schema and bootstrap after wiping
   if (!db_manager_->initialize()) {
     ESP_LOGE(TAG, "Failed to reinitialize database after wiping. Running without database.");
-    db_manager_.reset(nullptr); // Clean up failed DB manager
+    db_manager_.reset(nullptr);  // Clean up failed DB manager
     return false;
   }
-  
+
   return true;
 }
 
@@ -1070,7 +1037,7 @@ void B48DisplayController::display_startup_message(bool db_initialized) {
   loading_msg->tarif_zone = 101;
   loading_msg->static_intro = "Loading";
   loading_msg->is_ephemeral = true;
-  
+
   if (db_initialized) {
     loading_msg->scrolling_message = "System ready with database.";
     loading_msg->next_message_hint = "DB Ready";
@@ -1080,7 +1047,7 @@ void B48DisplayController::display_startup_message(bool db_initialized) {
     loading_msg->next_message_hint = "No DB";
     ESP_LOGW(TAG, "Running in no-database mode");
   }
-  
+
   loading_msg->priority = 75;
   send_commands_for_message(loading_msg);
 }

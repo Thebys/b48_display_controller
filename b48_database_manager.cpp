@@ -19,19 +19,28 @@ B48DatabaseManager::~B48DatabaseManager() {
     sqlite3_close(this->db_);
     this->db_ = nullptr;
   }
-  // Assuming sqlite3_shutdown() is handled globally if needed, not here.
+  
+  // Note: We don't shutdown SQLite here since other instances
+  // might still be using it. Global cleanup should happen 
+  // at application termination if needed.
 }
 
 bool B48DatabaseManager::initialize() {
   ESP_LOGD(TAG, "Initializing database manager for path: %s", this->database_path_.c_str());
 
-  // Note: Assuming sqlite3_initialize() is called globally once elsewhere (e.g., main setup)
-  // If not, it should be called here or managed carefully.
-  // if (sqlite3_initialize() != SQLITE_OK) {
-  //     ESP_LOGE(TAG, "Failed to initialize SQLite library.");
-  //     return false;
-  // }
+  // Initialize SQLite library globally if needed
+  ESP_LOGD(TAG, "Ensuring SQLite library is initialized");
+  int init_rc = sqlite3_initialize();
+  if (init_rc != SQLITE_OK) {
+    ESP_LOGE(TAG, "Failed to initialize SQLite library: %d", init_rc);
+    return false;
+  }
 
+  // Reset watchdog immediately after initialization
+  yield();
+  esp_task_wdt_reset();
+  
+  ESP_LOGD(TAG, "Opening database connection");
   int rc = sqlite3_open(this->database_path_.c_str(), &this->db_);
   if (rc != SQLITE_OK) {
     ESP_LOGE(TAG, "Failed to open database at '%s': %s", this->database_path_.c_str(), sqlite3_errmsg(this->db_));
@@ -40,6 +49,10 @@ bool B48DatabaseManager::initialize() {
     return false;
   }
   ESP_LOGI(TAG, "Successfully opened database connection at '%s'", this->database_path_.c_str());
+
+  // Reset watchdog after opening database
+  yield();
+  esp_task_wdt_reset();
 
   // --- Set Page Size ---
   char *err_msg = nullptr;
@@ -54,12 +67,20 @@ bool B48DatabaseManager::initialize() {
   }
   // --- End Set Page Size ---
 
+  // Reset watchdog after setting page size
+  yield();
+  esp_task_wdt_reset();
+
   if (!check_and_create_schema()) {
     ESP_LOGE(TAG, "Failed to verify or create database schema.");
     sqlite3_close(this->db_);
     this->db_ = nullptr;
     return false;
   }
+
+  // Reset watchdog after schema creation
+  yield();
+  esp_task_wdt_reset();
 
   // Bootstrap default messages if needed
   if (!bootstrap_default_messages()) {
@@ -400,6 +421,8 @@ bool B48DatabaseManager::delete_persistent_message(int message_id) {
 std::vector<std::shared_ptr<MessageEntry>> B48DatabaseManager::get_active_persistent_messages() {
   std::vector<std::shared_ptr<MessageEntry>> messages;
 
+  ESP_LOGD(TAG, "[STEP 1] Starting get_active_persistent_messages");
+  
   // Prepare the query to get all active messages
   const char *query = R"SQL(
     SELECT message_id, priority, line_number, tarif_zone, static_intro, 
@@ -416,11 +439,13 @@ std::vector<std::shared_ptr<MessageEntry>> B48DatabaseManager::get_active_persis
       message_id ASC;
   )SQL";
 
-  ESP_LOGD(TAG, "Executing query to get active messages");
+  ESP_LOGD(TAG, "[STEP 2] Executing query to get active messages");
   esp_task_wdt_reset();  // Reset watchdog timer before query
   
   sqlite3_stmt *stmt;
   int rc = sqlite3_prepare_v2(this->db_, query, -1, &stmt, nullptr);
+  ESP_LOGD(TAG, "[STEP 3] Prepare statement result: %d", rc);
+  
   if (rc != SQLITE_OK) {
     ESP_LOGE(TAG, "Failed to prepare statement: %s", sqlite3_errmsg(this->db_));
     return messages;  // Return empty vector
@@ -428,10 +453,22 @@ std::vector<std::shared_ptr<MessageEntry>> B48DatabaseManager::get_active_persis
 
   // Fetch and process each row
   int count = 0;
-  ESP_LOGD(TAG, "Starting to fetch messages from database");
+  ESP_LOGD(TAG, "[STEP 4] Starting to fetch messages from database");
   esp_task_wdt_reset();  // Reset watchdog timer before fetching rows
   
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
+  int step_result;
+  int step_count = 0;
+  unsigned long step_start_time = millis();
+  while ((step_result = sqlite3_step(stmt)) == SQLITE_ROW) {
+    step_count++;
+    unsigned long current_step_time = millis() - step_start_time;
+    if (step_count == 1 || step_count % 5 == 0) {
+      ESP_LOGD(TAG, "[STEP 5] Processing row %d (step took %lu ms)", 
+               count+1, current_step_time);
+      step_start_time = millis(); // Reset timer for next batch
+    }
+    esp_task_wdt_reset();  // Reset watchdog timer for each row
+    
     auto entry = std::make_shared<MessageEntry>();
 
     entry->is_ephemeral = false;
@@ -478,7 +515,18 @@ std::vector<std::shared_ptr<MessageEntry>> B48DatabaseManager::get_active_persis
     }
   }
 
+  ESP_LOGD(TAG, "[STEP 6] Finished loop with step_result=%d (SQLITE_DONE=%d)", 
+           step_result, SQLITE_DONE);
+  
+  // Properly handle non-SQLITE_DONE result
+  if (step_result != SQLITE_DONE) {
+    ESP_LOGE(TAG, "SQLite step error: %s", sqlite3_errmsg(this->db_));
+  }
+
+  ESP_LOGD(TAG, "[STEP 7] About to finalize statement");
   sqlite3_finalize(stmt);
+  
+  ESP_LOGD(TAG, "[STEP 8] Statement finalized");
   esp_task_wdt_reset();  // Final watchdog reset after fetching all rows
   
   ESP_LOGI(TAG, "Loaded %d messages from database", count);

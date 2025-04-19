@@ -56,7 +56,7 @@ api:
               priority, line_number, tarif_zone, 
               intro_text, message_text, hint_text, 
               duration, // Pass duration directly
-              "HA Service" // source_info
+              "HomeAssistant" // source_info
             );
 
 # Define services directly in the b48_display_controller component

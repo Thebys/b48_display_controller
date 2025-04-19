@@ -21,11 +21,6 @@ void B48HAIntegration::setup() {
   // after it has loaded its state.
 }
 
-void B48HAIntegration::dump_config() {
-  ESP_LOGCONFIG(TAG, "B48 Home Assistant Integration:");
-  LOG_SENSOR("  ", "Message Queue Size Sensor", this->message_queue_size_sensor_);
-}
-
 void B48HAIntegration::register_services_() {
   ESP_LOGD(TAG, "Registering HA services...");
 
