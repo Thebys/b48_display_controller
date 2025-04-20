@@ -485,39 +485,171 @@ void B48DisplayController::check_expired_messages() {
 }
 
 std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
-  std::lock_guard<std::mutex> lock(this->message_mutex_);
   time_t now = time(nullptr);
   std::shared_ptr<MessageEntry> selected_message = nullptr;
+  bool has_database = (this->db_manager_ != nullptr);
 
-  // 1. Check Ephemeral Messages (highest priority first due to pre-sorting)
-  for (const auto &msg : this->ephemeral_messages_) {
-    // Basic checks (should already be handled by expiry check, but good for safety)
+  // Priority threshold for emergency messages
+  const int emergency_threshold = this->emergency_priority_threshold_;
+
+  // Copy necessary data under lock to minimize lock duration
+  std::vector<std::shared_ptr<MessageEntry>> ephemeral_copy;
+  std::vector<std::shared_ptr<MessageEntry>> persistent_copy;
+
+  // Take a brief lock to copy the message vectors
+  {
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
+    ephemeral_copy = this->ephemeral_messages_;
+    if (has_database) {
+      persistent_copy = this->persistent_messages_;
+    }
+  }
+
+  // 1. First pass: Check for emergency messages (above threshold) in ephemeral messages
+  // Now we can work with our copies without holding the lock
+  for (const auto &msg : ephemeral_copy) {
     if (msg->expiry_time > 0 && msg->expiry_time <= now)
       continue;
 
-    selected_message = msg;
-    ESP_LOGD(TAG, "Selected ephemeral message (Prio: %d)", selected_message->priority);
-    break;  // Select the highest priority available ephemeral message
+    if (msg->priority >= emergency_threshold) {
+      selected_message = msg;
+      ESP_LOGD(TAG, "Selected emergency ephemeral message (Prio: %d)", selected_message->priority);
+      break;
+    }
   }
 
-  // If database is not available, don't try to use persistent messages
-  bool has_database = (this->db_manager_ != nullptr);
+  // 2. If no emergency message found, consider all messages based on a weighted approach
+  if (!selected_message) {
+    // For non-emergency selection, we'll mix ephemeral and persistent messages
 
-  // 2. If no suitable ephemeral message and database is available, check Persistent Messages
-  if (!selected_message && has_database) {
-    // Iterate through persistent messages using round-robin rotation
+    // Temporary vector to hold candidate messages with their selection weights
+    std::vector<std::pair<std::shared_ptr<MessageEntry>, float>> candidates;
 
-    static size_t last_persistent_index = 0;
+    // Add valid ephemeral messages to candidates
+    for (const auto &msg : ephemeral_copy) {
+      if (msg->expiry_time > 0 && msg->expiry_time <= now)
+        continue;
 
-    if (!this->persistent_messages_.empty()) {
-      // Simply select the next message in rotation
-      size_t current_index = last_persistent_index % this->persistent_messages_.size();
-      selected_message = this->persistent_messages_[current_index];
+      // Calculate a weight based on priority - higher priority = higher weight
+      float weight = 0.5f + (msg->priority / 100.0f);
+      candidates.push_back({msg, weight});
+    }
 
-      // Move to next message for next time
-      last_persistent_index = (last_persistent_index + 1) % this->persistent_messages_.size();
+    // Add persistent messages if database is available
+    if (has_database && !persistent_copy.empty()) {
+      static size_t last_persistent_index = 0;
 
-      ESP_LOGD(TAG, "Selected persistent message ID: %d (Prio: %d)", selected_message->message_id,
+      // Add ALL persistent messages to candidates, not just a limited number
+      // This ensures we consider the entire message pool
+      for (size_t i = 0; i < persistent_copy.size(); i++) {
+        auto msg = persistent_copy[i];
+
+        // Slightly improved weight calculation that better scales with priority
+        // Base weight is 0.3, max priority contribution would be ~0.5 for priority 60
+        float weight = 0.3f + (msg->priority / 100.0f);
+
+        candidates.push_back({msg, weight});
+      }
+    }
+
+    // If we have candidates and time available, build candidates list
+    if (!candidates.empty()) {
+      ESP_LOGD(TAG, "Considering %d total candidates for new message.", candidates.size());
+      // Sort candidates by weight in descending order
+      std::sort(candidates.begin(), candidates.end(),
+                [](const std::pair<std::shared_ptr<MessageEntry>, float> &a,
+                   const std::pair<std::shared_ptr<MessageEntry>, float> &b) { return a.second > b.second; });
+
+      // Penalize or remove candidates that have been displayed recently
+      time_t now = time(nullptr);
+      const int MIN_REPEAT_SECONDS = 120;  // Minimum seconds before showing same message again
+
+      for (auto &candidate : candidates) {
+        auto &msg = candidate.first;
+        time_t last_display = 0;
+
+        // Get appropriate last display time based on message type
+        if (msg->is_ephemeral) {
+          last_display = msg->last_display_time;
+        } else if (msg->message_id > 0) {
+          // Check if we have last display time for this persistent message
+          auto it = last_display_times_.find(msg->message_id);
+          if (it != last_display_times_.end()) {
+            last_display = it->second;
+          }
+        }
+
+        // Skip penalty if never displayed or displayed long ago
+        if (last_display == 0)
+          continue;
+
+        // Calculate time since last display
+        time_t time_since_display = now - last_display;
+
+        if (time_since_display < MIN_REPEAT_SECONDS) {
+          // High penalty for very recent messages - 90% weight reduction
+          candidate.second *= 0.1f;
+          ESP_LOGD(TAG, "Message %d penalized heavily (%.1f seconds ago)", msg->message_id, (float) time_since_display);
+        } else if (time_since_display < MIN_REPEAT_SECONDS * 2) {
+          // Medium penalty - 50% weight reduction
+          candidate.second *= 0.5f;
+          ESP_LOGD(TAG, "Message %d penalized moderately (%.1f seconds ago)", msg->message_id,
+                   (float) time_since_display);
+        } else if (time_since_display < MIN_REPEAT_SECONDS * 3) {
+          // Light penalty - 20% weight reduction
+          candidate.second *= 0.8f;
+          ESP_LOGD(TAG, "Message %d penalized lightly (%.1f seconds ago)", msg->message_id, (float) time_since_display);
+        }
+      }
+
+      // Resort after applying penalties
+      std::sort(candidates.begin(), candidates.end(),
+                [](const std::pair<std::shared_ptr<MessageEntry>, float> &a,
+                   const std::pair<std::shared_ptr<MessageEntry>, float> &b) { return a.second > b.second; });
+
+      // Log top 6 candidates (or fewer if less available)
+      const int candidates_to_log = std::min(6, static_cast<int>(candidates.size()));
+      ESP_LOGI(TAG, "Top %d candidates after weighting and penalties:", candidates_to_log);
+      for (int i = 0; i < candidates_to_log; i++) {
+        const auto &candidate = candidates[i];
+        ESP_LOGI(TAG, "  #%d: ID=%d, Type=%s, Priority=%d, Weight=%.3f", i + 1, candidate.first->message_id,
+                 candidate.first->is_ephemeral ? "ephemeral" : "persistent", candidate.first->priority,
+                 candidate.second);
+      }
+
+      // Select the highest weighted candidate
+      selected_message = candidates[0].first;
+      float selected_weight = candidates[0].second;
+
+      // Update the round-robin index for persistent messages
+      if (!selected_message->is_ephemeral && has_database) {
+        static size_t last_persistent_index = 0;
+        // Find the index of this message in persistent_copy
+        for (size_t i = 0; i < persistent_copy.size(); i++) {
+          if (persistent_copy[i]->message_id == selected_message->message_id) {
+            last_persistent_index = (i + 1) % persistent_copy.size();
+            break;
+          }
+        }
+      }
+
+      ESP_LOGD(TAG, "Selected %s message ID: %d (Prio: %d, Weight: %.2f)",
+               selected_message->is_ephemeral ? "ephemeral" : "persistent", selected_message->message_id,
+               selected_message->priority, selected_weight);
+    }
+
+    // Fall back to a simple selection if we have no candidates with positive weights
+    else if (has_database && !persistent_copy.empty()) {
+      static size_t last_persistent_index = 0;
+
+      ESP_LOGW(TAG, "Weighted selection algorithm found no suitable candidates, falling back to round-robin");
+
+      // Only use the fallback if there are actually persistent messages available
+      size_t current_index = last_persistent_index % persistent_copy.size();
+      selected_message = persistent_copy[current_index];
+      last_persistent_index = (last_persistent_index + 1) % persistent_copy.size();
+
+      ESP_LOGD(TAG, "Selected fallback persistent message ID: %d (Prio: %d)", selected_message->message_id,
                selected_message->priority);
     }
   }
@@ -540,7 +672,7 @@ int B48DisplayController::calculate_display_duration(const std::shared_ptr<Messa
   if (!msg)
     return 4;  // Default duration if msg is null
 
-  int base_duration = 5;    // Base seconds
+  int base_duration = 5;     // Base seconds
   int chars_per_second = 3;  // Estimated scroll speed
   int length_duration = base_duration;
   if (msg->is_ephemeral) {

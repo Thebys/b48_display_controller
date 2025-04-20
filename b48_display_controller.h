@@ -210,7 +210,7 @@ class B48DisplayController : public Component {
   // Stored sensor for HA integration
   sensor::Sensor *message_queue_size_sensor_{nullptr};
 
-  // Tracking last display times for messages
+  // Tracking last display times for persistent messages
   std::map<int, time_t> last_display_times_;
 
   // Time test mode variables
