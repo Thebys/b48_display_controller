@@ -174,8 +174,6 @@ void B48DisplayController::loop() {
     unsigned long sync_interval_millis = (unsigned long) this->time_sync_interval_ * 1000;
 
     if (time_since_last_sync >= sync_interval_millis) {
-      ESP_LOGD(TAG, "Performing time sync. Elapsed: %lu ms, Interval: %lu ms", time_since_last_sync,
-               sync_interval_millis);
       send_time_update();
       this->last_time_sync_ = current_millis;
     }
@@ -453,6 +451,9 @@ void B48DisplayController::check_expired_messages() {
 }
 
 std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
+  yield();               // Yield to the OS before potentially long operation
+  esp_task_wdt_reset();  // Reset watchdog timer
+
   time_t now = time(nullptr);
   std::shared_ptr<MessageEntry> selected_message = nullptr;
   bool has_database = (this->db_manager_ != nullptr);
@@ -499,7 +500,7 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
         continue;
 
       // Calculate a weight based on priority - higher priority = higher weight
-      float weight = 0.5f + (msg->priority / 100.0f);
+      float weight = 0.6f + (msg->priority / 100.0f);
       candidates.push_back({msg, weight});
     }
 
@@ -514,7 +515,7 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 
         // Slightly improved weight calculation that better scales with priority
         // Base weight is 0.3, max priority contribution would be ~0.5 for priority 60
-        float weight = 0.3f + (msg->priority / 100.0f);
+        float weight = 0.4f + (msg->priority / 100.0f);
 
         candidates.push_back({msg, weight});
       }
@@ -533,7 +534,7 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
       
       // Penalize or remove candidates that have been displayed recently
       time_t now = time(nullptr);
-      const int MIN_REPEAT_SECONDS = 180;  // Minimum seconds before showing same message again
+      const int MIN_REPEAT_SECONDS = 300;  // Minimum seconds before showing same message again
 
       for (auto &candidate : candidates) {
         auto &msg = candidate.first;
@@ -558,14 +559,14 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
         // Apply penalties based on how recently the message was displayed
         if (last_display > 0) {
           if (time_since_display < MIN_REPEAT_SECONDS) {
-            // High penalty for very recent messages - 80% weight reduction
-            penalty_factor = 0.2f;
+            // High penalty for very recent messages - 85% weight reduction
+            penalty_factor = 0.15f;
           } else if (time_since_display < MIN_REPEAT_SECONDS * 3) {
-            // Medium penalty - 50% weight reduction
-            penalty_factor = 0.5f;
+            // Medium penalty - 60% weight reduction
+            penalty_factor = 0.4f;
           } else if (time_since_display < MIN_REPEAT_SECONDS * 18) {
-            // Light penalty - 20% weight reduction
-            penalty_factor = 0.8f;
+            // Light penalty - 30% weight reduction
+            penalty_factor = 0.7f;
           }
           
           // Apply the penalty
@@ -676,7 +677,6 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
   if (!selected_message) {
     ESP_LOGW(TAG, "No suitable message found for display.");
   } else {
-    ESP_LOGD(TAG, "Selected message: %d", selected_message->message_id);
     this->current_display_duration_ms_ = calculate_display_duration(selected_message) * 1000;
   }
   return selected_message;
@@ -801,8 +801,6 @@ void B48DisplayController::run_transition_mode() {
     ESP_LOGD(TAG, "Current message: %d", this->current_message_ ? this->current_message_->message_id : 0);
     this->serial_protocol_.switch_to_cycle(6);
     this->current_message_ = select_next_message();
-
-    ESP_LOGD(TAG, "Selected message: %d", this->current_message_ ? this->current_message_->message_id : 0);
 
     if (this->current_message_) {
       send_commands_for_message(this->current_message_);

@@ -18,15 +18,13 @@ bool BUSE120SerialProtocol::send_command(const std::string &payload) {
   uint8_t checksum = calculate_checksum(payload);
 
   // Log the command and bytes for debugging
-  ESP_LOGD(TAG, "Sending command: %s", payload.c_str());
+  ESP_LOGV(TAG, "Sending command: %s", payload.c_str());
   std::string debug_bytes;
   for (char c : payload) {
     char hex[4];
     snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(c));
     debug_bytes += hex;
   }
-  //ESP_LOGD(TAG, "Command bytes: %s", debug_bytes.c_str());
-  //ESP_LOGD(TAG, "Terminator: 0D, Checksum: %02X", checksum);
 
   // Send payload
   this->uart_->write_array(reinterpret_cast<const uint8_t *>(payload.c_str()), payload.length());
