@@ -11,7 +11,8 @@ esphome:
       - -DESP_PLATFORM
     build_unflags: -fno-exceptions
     board_build.filesystem: littlefs
-    board_build.partitions: "/esphome/esphome/espington/espington.csv"
+    # PUT THE CSV FILE FROM THE REPO NEXT TO THE ESPHome device YAML config FILE AND IT SHOULD WORK.
+    board_build.partitions: "/config/esphome/b48_partitions.csv"
 esp32:
   board: esp32dev
   framework:
