@@ -123,7 +123,7 @@ class B48DisplayController : public Component {
   bool init_database();
   bool refresh_message_cache();
   void check_expired_messages();
-  void check_ephemeral_messages();
+  void check_expired_ephemeral_messages();
   
   // Setup helper methods
   bool initialize_filesystem();
@@ -194,9 +194,12 @@ class B48DisplayController : public Component {
   
   // State tracking
   DisplayState state_{TRANSITION_MODE};
+  bool should_interrupt_{false};
   unsigned long state_change_time_{0};
   unsigned long last_time_sync_{0};
+  unsigned long last_ephemeral_check_time_{0};
   time_t current_time_{0};
+  unsigned long current_display_duration_ms_{5000};  // Store calculated display duration
   
   // Threading protection
   std::mutex message_mutex_;

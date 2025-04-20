@@ -153,26 +153,26 @@ void B48DisplayController::loop() {
   // Check ephemeral messages frequently (every 6 seconds)
   static unsigned long last_ephemeral_check = 0;
   if (millis() - last_ephemeral_check > 6 * 1000) {
-    check_ephemeral_messages();
+    check_expired_ephemeral_messages();
     last_ephemeral_check = millis();
   }
-  
+
   // Periodically check for expired messages (every hour)
   static unsigned long last_expiry_check = 0;
   if (millis() - last_expiry_check > 3600 * 1000) {
     check_expired_messages();
     last_expiry_check = millis();
   }
-  
+
   // Handle time synchronization with the display
   if (this->time_sync_interval_ > 0 && this->current_time_ > 0) {
     unsigned long current_millis = millis();
     unsigned long time_since_last_sync = current_millis - this->last_time_sync_;
-    unsigned long sync_interval_millis = (unsigned long)this->time_sync_interval_ * 1000;
-    
+    unsigned long sync_interval_millis = (unsigned long) this->time_sync_interval_ * 1000;
+
     if (time_since_last_sync >= sync_interval_millis) {
-      ESP_LOGD(TAG, "Performing time sync. Elapsed: %lu ms, Interval: %lu ms", 
-               time_since_last_sync, sync_interval_millis);
+      ESP_LOGD(TAG, "Performing time sync. Elapsed: %lu ms, Interval: %lu ms", time_since_last_sync,
+               sync_interval_millis);
       send_time_update();
       this->last_time_sync_ = current_millis;
     }
@@ -224,8 +224,8 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
     msg->scrolling_message = scrolling_message;
     msg->next_message_hint = next_message_hint;
     msg->expiry_time = time(nullptr) + duration_seconds;  // Set TTL based on current time
-    msg->last_display_time = 0;    // Use correct member name
-    msg->is_ephemeral = true;      // Mark as ephemeral
+    msg->last_display_time = 0;                           // Use correct member name
+    msg->is_ephemeral = true;                             // Mark as ephemeral
 
     {
       std::lock_guard<std::mutex> lock(this->message_mutex_);
@@ -233,13 +233,19 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
       ESP_LOGD(TAG, "Ephemeral message added to RAM queue. Current ephemeral count: %d",
                this->ephemeral_messages_.size());
     }
+
     update_ha_queue_size();  // Update HA sensor
 
     // After adding a new ephemeral message
-    std::sort(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(), 
-        [](const std::shared_ptr<MessageEntry> &a, const std::shared_ptr<MessageEntry> &b) {
-            return a->priority > b->priority;  // Sort by descending priority
-        });
+    std::sort(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
+              [](const std::shared_ptr<MessageEntry> &a, const std::shared_ptr<MessageEntry> &b) {
+                return a->priority > b->priority;  // Sort by descending priority
+              });
+
+    // If the message is above emergency threshold, force transition to display message
+    if (priority >= this->emergency_priority_threshold_) {
+      this->should_interrupt_ = true;
+    }
 
     return true;
   } else {
@@ -428,27 +434,26 @@ bool B48DisplayController::refresh_message_cache() {
   return true;
 }
 
-void B48DisplayController::check_ephemeral_messages() {
+void B48DisplayController::check_expired_ephemeral_messages() {
   // Only check ephemeral messages in RAM (no database interaction)
-  std::lock_guard<std::mutex> lock(this->message_mutex_);
   time_t now = time(nullptr);
   int ephemeral_expired = 0;
+  std::lock_guard<std::mutex> lock(this->message_mutex_);
 
   // Remove expired ephemeral messages based on TTL only
-  this->ephemeral_messages_.erase(
-      std::remove_if(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
-                     [&](const std::shared_ptr<MessageEntry> &msg) {
-                       bool expired = false;
-                       // Check TTL
-                       if (msg->expiry_time > 0 && msg->expiry_time <= now) {
-                         expired = true;
-                       }
-                       if (expired) {
-                         ephemeral_expired++;
-                       }
-                       return expired;
-                     }),
-      this->ephemeral_messages_.end());
+  this->ephemeral_messages_.erase(std::remove_if(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
+                                                 [&](const std::shared_ptr<MessageEntry> &msg) {
+                                                   bool expired = false;
+                                                   // Check TTL
+                                                   if (msg->expiry_time > 0 && msg->expiry_time <= now) {
+                                                     expired = true;
+                                                   }
+                                                   if (expired) {
+                                                     ephemeral_expired++;
+                                                   }
+                                                   return expired;
+                                                 }),
+                                  this->ephemeral_messages_.end());
 
   if (ephemeral_expired > 0) {
     ESP_LOGI(TAG, "Expired %d ephemeral messages from RAM", ephemeral_expired);
@@ -475,7 +480,7 @@ void B48DisplayController::check_expired_messages() {
   } else if (persistent_expired < 0) {
     ESP_LOGE(TAG, "Error checking persistent message expiry.");
   }
-  
+
   // No need to check ephemeral messages here since we have a separate method for that
 }
 
@@ -483,9 +488,6 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
   std::lock_guard<std::mutex> lock(this->message_mutex_);
   time_t now = time(nullptr);
   std::shared_ptr<MessageEntry> selected_message = nullptr;
-
-  // If database is not available, don't try to use persistent messages
-  bool has_database = (this->db_manager_ != nullptr);
 
   // 1. Check Ephemeral Messages (highest priority first due to pre-sorting)
   for (const auto &msg : this->ephemeral_messages_) {
@@ -498,30 +500,35 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
     break;  // Select the highest priority available ephemeral message
   }
 
+  // If database is not available, don't try to use persistent messages
+  bool has_database = (this->db_manager_ != nullptr);
+
   // 2. If no suitable ephemeral message and database is available, check Persistent Messages
   if (!selected_message && has_database) {
     // Iterate through persistent messages using round-robin rotation
-    
+
     static size_t last_persistent_index = 0;
-    
+
     if (!this->persistent_messages_.empty()) {
       // Simply select the next message in rotation
       size_t current_index = last_persistent_index % this->persistent_messages_.size();
       selected_message = this->persistent_messages_[current_index];
-      
+
       // Move to next message for next time
       last_persistent_index = (last_persistent_index + 1) % this->persistent_messages_.size();
-      
-      ESP_LOGD(TAG, "Selected persistent message ID: %d (Prio: %d)", 
-               selected_message->message_id, selected_message->priority);
+
+      ESP_LOGD(TAG, "Selected persistent message ID: %d (Prio: %d)", selected_message->message_id,
+               selected_message->priority);
     }
   }
 
   // 3. If still no message, return nullptr (will trigger fallback)
   if (!selected_message) {
     ESP_LOGW(TAG, "No suitable message found for display.");
+  } else {
+    ESP_LOGD(TAG, "Selected message: %d", selected_message->message_id);
+    this->current_display_duration_ms_ = calculate_display_duration(selected_message) * 1000;
   }
-
   return selected_message;
 }
 
@@ -533,13 +540,21 @@ int B48DisplayController::calculate_display_duration(const std::shared_ptr<Messa
   if (!msg)
     return 4;  // Default duration if msg is null
 
-  int base_duration = 10;    // Base seconds
+  int base_duration = 5;    // Base seconds
   int chars_per_second = 3;  // Estimated scroll speed
-  int length_duration = msg->scrolling_message.length() / chars_per_second;
+  int length_duration = base_duration;
+  if (msg->is_ephemeral) {
+    length_duration = msg->expiry_time - time(nullptr);
+  } else {
+    length_duration = (base_duration + msg->scrolling_message.length()) / chars_per_second;
+  }
 
   // Use a simple heuristic: longer messages display for longer, up to a max
-  int calculated_duration = std::max(base_duration, std::min(length_duration, 20));
-  ESP_LOGI(TAG, "Calculated display duration for message ID %d: base_duration=%d, length_duration=%d, calculated_duration=%d", msg->message_id, base_duration, length_duration, calculated_duration);
+  int calculated_duration = std::min(length_duration, 60);
+  ESP_LOGI(
+      TAG,
+      "Calculated display duration for message ID %d: base_duration=%d, length_duration=%d, calculated_duration=%d",
+      msg->message_id, base_duration, length_duration, calculated_duration);
   return calculated_duration;
 }
 
@@ -627,43 +642,49 @@ void B48DisplayController::run_transition_mode() {
   unsigned long transition_duration_ms = this->transition_duration_ * 1000;
 
   // If this is our first entry to this state, log and setup
-  if (time_in_state == 0) {
-    ESP_LOGD(TAG, "WELCOME TO TRANSITION MODE");
+  if (time_in_state < 10 || this->should_interrupt_) {
+    ESP_LOGD(TAG, "========= WELCOME TO TRANSITION MODE =========");
+    if (this->should_interrupt_) {
+      transition_duration_ms = 0;
+      this->should_interrupt_ = false;
+    }
+    ESP_LOGD(TAG, "Current message: %d", this->current_message_ ? this->current_message_->message_id : 0);
     this->serial_protocol_.switch_to_cycle(6);
     this->current_message_ = select_next_message();
-    
+
+    ESP_LOGD(TAG, "Selected message: %d", this->current_message_ ? this->current_message_->message_id : 0);
+
     if (this->current_message_) {
       send_commands_for_message(this->current_message_);
       ESP_LOGD(TAG, "Message prepared, waiting in cycle 6 for %d seconds", this->transition_duration_);
     } else {
       display_fallback_message();
-      ESP_LOGD(TAG, "No message selected, displaying fallback, waiting in cycle 6 for %d seconds", this->transition_duration_);
+      ESP_LOGD(TAG, "No message selected, displaying fallback, waiting in cycle 6 for %d seconds",
+               this->transition_duration_);
     }
-    return; // Stay in this state until transition duration elapses
   }
-  
+
   // Check if transition duration has elapsed
   if (time_in_state < transition_duration_ms) {
     // Not enough time has passed, stay in transition mode
     return;
   }
-  
+
   // Transition duration has elapsed, switch to cycle 0 and move to display mode
-  ESP_LOGD(TAG, "Transition duration elapsed, switching to cycle 0");
+  ESP_LOGD(TAG, "Transition duration elapsed, spending %d ms", time_in_state);
   this->serial_protocol_.switch_to_cycle(0);
+
   this->state_ = DISPLAY_MESSAGE;
   this->state_change_time_ = millis();
 }
 
 void B48DisplayController::run_display_message() {
-  int display_duration_ms = 5000;  // Default if current_message_ is null
-  if (this->current_message_) {
-    display_duration_ms = calculate_display_duration(this->current_message_) * 1000;
-  }
-
+  // Use the pre-calculated display duration instead of recalculating it
   unsigned long time_in_state = millis() - this->state_change_time_;
-  if (time_in_state >= (unsigned long) display_duration_ms) {
-    ESP_LOGV(TAG, "Display duration ended, updating stats and moving to TRANSITION_MODE");
+
+  // Check if we've reached the end of the display duration
+  if (time_in_state >= this->current_display_duration_ms_ || this->should_interrupt_) {
+    ESP_LOGV(TAG, "Display state ending, updating stats and moving to TRANSITION_MODE");
     update_message_display_stats(this->current_message_);  // Update stats before transitioning
     this->current_message_ = nullptr;                      // Clear current message
     this->state_ = TRANSITION_MODE;
@@ -689,11 +710,49 @@ void B48DisplayController::display_fallback_message() {
 }
 
 void B48DisplayController::check_for_emergency_messages() {
-  // Placeholder for emergency logic (e.g., checking a specific ephemeral message flag)
-  // If an emergency message needs to be displayed immediately, you might:
-  // 1. Force this->current_message_ to the emergency message.
-  // 2. Send commands immediately.
-  // 3. Reset the state machine to DISPLAY_MESSAGE with a longer duration.
+  // Check we have sensible time to check
+  if (time(nullptr) - this->last_ephemeral_check_time_ < 1000) {
+    return;
+  }
+  this->last_ephemeral_check_time_ = time(nullptr);
+  // Variables for decision making - populated under different locks
+  std::shared_ptr<MessageEntry> highest_priority_message = nullptr;
+  bool has_messages = false;
+  unsigned long time_in_state = 0;
+
+  // First, safely check if we have any messages and grab the highest priority one
+  {
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
+
+    if (this->ephemeral_messages_.empty()) {
+      return;  // No messages to process
+    }
+    // Copy the highest priority message to use outside the lock
+    highest_priority_message = this->ephemeral_messages_[0];
+  }
+  // Check if the message is expired based on expiry_time
+  if (highest_priority_message->expiry_time > 0 && highest_priority_message->expiry_time <= time(nullptr)) {
+    ESP_LOGD(TAG, "Highest priority message is expired, removing it from the queue");
+    std::lock_guard<std::mutex> lock(this->message_mutex_);
+    {
+      this->ephemeral_messages_.erase(this->ephemeral_messages_.begin());
+    }
+    highest_priority_message = nullptr;
+  }
+  has_messages = highest_priority_message != nullptr;
+  if (!has_messages) {
+    return;
+  }
+
+  // Outside the lock, do business...
+  // Check for emergency priority threshold
+
+  // Process the interruption if needed
+  if (this->should_interrupt_) {
+    update_message_display_stats(this->current_message_);  // Update stats before transitioning
+    this->state_ = TRANSITION_MODE;                        // Force transition to pick up new message
+    this->state_change_time_ = millis();
+  }
 }
 
 void B48DisplayController::dump_database_for_diagnostics() {

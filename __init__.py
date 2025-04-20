@@ -32,7 +32,6 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_TRANSITION_DURATION, default=4): cv.positive_int,
     cv.Optional(CONF_TIME_SYNC_INTERVAL, default=60): cv.positive_int,
     cv.Optional(CONF_EMERGENCY_PRIORITY_THRESHOLD, default=95): cv.int_range(min=0, max=100),
-    cv.Optional(CONF_MIN_SECONDS_BETWEEN_REPEATS, default=30): cv.positive_int,
     cv.Optional(CONF_RUN_TESTS_ON_STARTUP, default=False): cv.boolean,
     cv.Optional(CONF_WIPE_DATABASE_ON_BOOT, default=False): cv.boolean,
     # New option for testing purposes - pulls a pin high to enable the display
