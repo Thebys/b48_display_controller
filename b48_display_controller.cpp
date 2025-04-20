@@ -513,7 +513,7 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 
     if (msg->priority >= emergency_threshold) {
       selected_message = msg;
-      ESP_LOGD(TAG, "Selected emergency ephemeral message (Prio: %d)", selected_message->priority);
+      ESP_LOGI(TAG, "Selected emergency ephemeral message (Prio: %d)", selected_message->priority);
       break;
     }
   }
@@ -562,7 +562,7 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 
       // Penalize or remove candidates that have been displayed recently
       time_t now = time(nullptr);
-      const int MIN_REPEAT_SECONDS = 120;  // Minimum seconds before showing same message again
+      const int MIN_REPEAT_SECONDS = 180;  // Minimum seconds before showing same message again
 
       for (auto &candidate : candidates) {
         auto &msg = candidate.first;
@@ -588,14 +588,14 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 
         if (time_since_display < MIN_REPEAT_SECONDS) {
           // High penalty for very recent messages - 90% weight reduction
-          candidate.second *= 0.1f;
+          candidate.second *= 0.2f;
           ESP_LOGD(TAG, "Message %d penalized heavily (%.1f seconds ago)", msg->message_id, (float) time_since_display);
-        } else if (time_since_display < MIN_REPEAT_SECONDS * 2) {
+        } else if (time_since_display < MIN_REPEAT_SECONDS * 3) {
           // Medium penalty - 50% weight reduction
           candidate.second *= 0.5f;
           ESP_LOGD(TAG, "Message %d penalized moderately (%.1f seconds ago)", msg->message_id,
                    (float) time_since_display);
-        } else if (time_since_display < MIN_REPEAT_SECONDS * 3) {
+        } else if (time_since_display < MIN_REPEAT_SECONDS * 18) {
           // Light penalty - 20% weight reduction
           candidate.second *= 0.8f;
           ESP_LOGD(TAG, "Message %d penalized lightly (%.1f seconds ago)", msg->message_id, (float) time_since_display);
@@ -633,9 +633,9 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
         }
       }
 
-      ESP_LOGD(TAG, "Selected %s message ID: %d (Prio: %d, Weight: %.2f)",
+      ESP_LOGI(TAG, "Selected %s message ID: %d (Prio: %d, Weight: %.2f) - Title: %s",
                selected_message->is_ephemeral ? "ephemeral" : "persistent", selected_message->message_id,
-               selected_message->priority, selected_weight);
+               selected_message->priority, selected_weight, selected_message->static_intro.c_str());
     }
 
     // Fall back to a simple selection if we have no candidates with positive weights
