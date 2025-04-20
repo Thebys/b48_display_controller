@@ -37,6 +37,9 @@ void B48HAIntegration::register_services_() {
   // Register services for time test mode
   register_service(&B48HAIntegration::handle_start_time_test_service_, "start_time_test");
   register_service(&B48HAIntegration::handle_stop_time_test_service_, "stop_time_test");
+  
+  // Register service for database maintenance
+  register_service(&B48HAIntegration::handle_purge_disabled_messages_service_, "purge_disabled_messages");
 
   ESP_LOGD(TAG, "Service registration complete.");
 }
@@ -114,6 +117,23 @@ void B48HAIntegration::handle_stop_time_test_service_() {
     ESP_LOGI(TAG, "Time test mode stopped via HA service");
   } else {
     ESP_LOGE(TAG, "Cannot stop time test mode - parent controller not available");
+  }
+}
+
+// --- Database Maintenance Service Handlers ---
+
+void B48HAIntegration::handle_purge_disabled_messages_service_() {
+  ESP_LOGI(TAG, "Service purge_disabled_messages called. Purging disabled messages from database...");
+  
+  if (parent_) {
+    bool success = parent_->purge_disabled_messages();
+    if (success) {
+      ESP_LOGI(TAG, "Successfully purged disabled messages via HA service");
+    } else {
+      ESP_LOGE(TAG, "Failed to purge disabled messages via HA service");
+    }
+  } else {
+    ESP_LOGE(TAG, "Cannot purge disabled messages - parent controller not available");
   }
 }
 

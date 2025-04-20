@@ -74,6 +74,9 @@ class B48DisplayController : public Component {
   // HA Entity Setters (called from __init__.py)
   void set_message_queue_size_sensor(sensor::Sensor *sensor);
 
+  // Configuration for database maintenance
+  void set_purge_interval_hours(int hours) { this->purge_interval_hours_ = hours; }
+
   // Message management
   /**
    * @brief Adds a message to be displayed. Handles both persistent and ephemeral messages based on duration.
@@ -117,6 +120,10 @@ class B48DisplayController : public Component {
   void start_time_test_mode();
   void stop_time_test_mode();
   bool is_time_test_mode_active() const { return time_test_mode_active_; }
+  
+  // Database maintenance methods
+  bool purge_disabled_messages();
+  int get_purge_interval_hours() const { return this->purge_interval_hours_; }
 
  protected:
   // Database methods
@@ -124,6 +131,7 @@ class B48DisplayController : public Component {
   bool refresh_message_cache();
   void check_expired_messages();
   void check_expired_ephemeral_messages();
+  void check_purge_interval(); // Periodic check for message purging
   
   // Setup helper methods
   bool initialize_filesystem();
@@ -218,9 +226,13 @@ class B48DisplayController : public Component {
   unsigned int current_time_test_value_{0};
   unsigned long last_time_test_update_{0};
   static constexpr unsigned long TIME_TEST_INTERVAL_MS = 800; // Update every 800ms
-
+  
+  // Database maintenance variables
+  time_t last_purge_time_{0};
+  int purge_interval_hours_{24}; // Default to daily purge
+  
   // Helper to schedule refresh of message cache on loopTask
-  std::atomic<bool> pending_refresh_{false};
+  std::atomic<bool> pending_message_cache_refresh_{false};
 };
 
 }  // namespace b48_display_controller

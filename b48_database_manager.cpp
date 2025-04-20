@@ -623,6 +623,87 @@ int B48DatabaseManager::expire_old_messages() {
   return changes;
 }
 
+int B48DatabaseManager::purge_disabled_messages() {
+  ESP_LOGW(TAG, "Physically purging disabled messages from database...");
+  
+  // Ensure database connection is valid
+  if (!this->db_) {
+    ESP_LOGE(TAG, "Database connection is not open. Cannot purge disabled messages.");
+    return -1;
+  }
+  
+  yield();               // Yield to the OS before potentially long operation
+  esp_task_wdt_reset();  // Reset watchdog timer
+  
+  // First count how many messages will be purged
+  const char *count_sql = "SELECT COUNT(*) FROM messages WHERE is_enabled = 0;";
+  sqlite3_stmt *count_stmt = nullptr;
+  int rc = sqlite3_prepare_v2(this->db_, count_sql, -1, &count_stmt, nullptr);
+  
+  if (rc != SQLITE_OK) {
+    ESP_LOGE(TAG, "Failed to prepare count statement: %s", sqlite3_errmsg(this->db_));
+    return -1;
+  }
+  
+  int disabled_count = 0;
+  if (sqlite3_step(count_stmt) == SQLITE_ROW) {
+    disabled_count = sqlite3_column_int(count_stmt, 0);
+    ESP_LOGI(TAG, "Found %d disabled messages to purge", disabled_count);
+  } else {
+    ESP_LOGE(TAG, "Failed to count disabled messages: %s", sqlite3_errmsg(this->db_));
+    sqlite3_finalize(count_stmt);
+    return -1;
+  }
+  sqlite3_finalize(count_stmt);
+  
+  if (disabled_count == 0) {
+    ESP_LOGI(TAG, "No disabled messages to purge");
+    return 0;  // Nothing to do
+  }
+  
+  // Execute the deletion operation
+  yield();               // Yield again before deletion
+  esp_task_wdt_reset();  // Reset watchdog timer
+  
+  const char *delete_sql = "DELETE FROM messages WHERE is_enabled = 0;";
+  char *err_msg = nullptr;
+  
+  rc = sqlite3_exec(this->db_, delete_sql, nullptr, nullptr, &err_msg);
+  
+  yield();               // Yield again after operation
+  esp_task_wdt_reset();  // Reset watchdog timer
+  
+  if (rc != SQLITE_OK) {
+    ESP_LOGE(TAG, "SQL error during purge of disabled messages: %s", err_msg);
+    sqlite3_free(err_msg);
+    return -1;
+  }
+  
+  int actually_deleted = sqlite3_changes(this->db_);
+  ESP_LOGI(TAG, "Successfully purged %d disabled messages from database", actually_deleted);
+  
+  // Vacuum the database to reclaim space (optional but recommended for infrequent cleanup)
+  ESP_LOGI(TAG, "Performing VACUUM operation to reclaim space...");
+  
+  yield();               // Yield before vacuum
+  esp_task_wdt_reset();  // Reset watchdog timer
+  
+  rc = sqlite3_exec(this->db_, "VACUUM;", nullptr, nullptr, &err_msg);
+  
+  yield();               // Yield after vacuum
+  esp_task_wdt_reset();  // Reset watchdog timer
+  
+  if (rc != SQLITE_OK) {
+    ESP_LOGW(TAG, "VACUUM operation failed: %s", err_msg);
+    sqlite3_free(err_msg);
+    // Continue anyway, this is not critical
+  } else {
+    ESP_LOGI(TAG, "VACUUM operation completed successfully");
+  }
+  
+  return actually_deleted;
+}
+
 // --- Bootstrapping ---
 
 bool B48DatabaseManager::bootstrap_default_messages() {

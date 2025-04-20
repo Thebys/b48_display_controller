@@ -23,6 +23,7 @@ CONF_WIPE_DATABASE_ON_BOOT = "wipe_database_on_boot"
 CONF_DISPLAY_ENABLE_PIN = "display_enable_pin"  # New testing-only configuration
 CONF_MESSAGE_QUEUE_SIZE_SENSOR = "message_queue_size_sensor"
 CONF_LAST_MESSAGE_SENSOR = "last_message_sensor"
+CONF_PURGE_INTERVAL_HOURS = "purge_interval_hours"  # New configuration for database maintenance
 
 # Configuration schema with all required parameters
 CONFIG_SCHEMA = cv.Schema({
@@ -38,6 +39,7 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_DISPLAY_ENABLE_PIN): cv.int_range(min=0, max=39),
     cv.Optional(CONF_MESSAGE_QUEUE_SIZE_SENSOR): cv.use_id(Sensor),
     cv.Optional(CONF_LAST_MESSAGE_SENSOR): cv.use_id(TextSensor),
+    cv.Optional(CONF_PURGE_INTERVAL_HOURS, default=24): cv.positive_int,  # Default to 24 hours
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
@@ -60,6 +62,9 @@ async def to_code(config):
     # Configure display enable pin for testing if specified
     if CONF_DISPLAY_ENABLE_PIN in config:
         cg.add(var.set_display_enable_pin(config[CONF_DISPLAY_ENABLE_PIN]))
+    
+    # Set database maintenance configuration
+    cg.add(var.set_purge_interval_hours(config[CONF_PURGE_INTERVAL_HOURS]))
         
     # Connect sensors if specified
     if CONF_MESSAGE_QUEUE_SIZE_SENSOR in config:

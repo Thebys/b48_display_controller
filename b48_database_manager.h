@@ -63,6 +63,8 @@ class B48DatabaseManager {
   // Maintenance
   int expire_old_messages(); // Returns number of messages expired
 
+  int purge_disabled_messages(); // Returns number of disabled messages physically deleted from the database
+
   int get_message_count(); // <-- ADDED: Get count of active persistent messages
 
   bool clear_all_messages(); // <-- ADDED: Method to clear all persistent messages

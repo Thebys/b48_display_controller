@@ -108,6 +108,7 @@ b48_display_controller:
   run_tests_on_startup: true
   wipe_database_on_boot: false
   display_enable_pin: 5
+  purge_interval_hours: 24  # Purge disabled messages from database every 24 hours
   message_queue_size_sensor: message_queue_size
 
 sensor:

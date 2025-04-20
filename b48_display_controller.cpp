@@ -24,12 +24,7 @@ static const char *const TAG = "b48c.main";
 static const char CR = 0x0D;  // Carriage Return for BUSE120 protocol
 
 // Destructor
-B48DisplayController::~B48DisplayController() {
-  if (this->db_manager_) {
-    // Optionally perform cleanup related to db_manager_ if needed
-    // sqlite3_close is handled by db_manager_ destructor
-  }
-}
+B48DisplayController::~B48DisplayController() {}
 
 // --- HA Entity Setters ---
 void B48DisplayController::set_message_queue_size_sensor(sensor::Sensor *sensor) {
@@ -103,10 +98,7 @@ void B48DisplayController::setup() {
 
       // Load messages from the database if available
       if (db_initialized) {
-        if (!refresh_message_cache()) {
-          ESP_LOGW(TAG, "Failed to refresh message cache initially - database might be empty");
-          // Not fatal - DB might just be empty
-        }
+        this->pending_message_cache_refresh_.store(true);
       }
     }
   }
@@ -125,19 +117,27 @@ void B48DisplayController::setup() {
   // Since it can still work in ephemeral-only mode
   ESP_LOGI(TAG, "B48 Display Controller setup complete - %s", db_initialized ? "with database" : "in no-database mode");
 }
-
 void B48DisplayController::loop() {
   // Update current time using standard C time
   this->current_time_ = time(nullptr);
-  // Log if time seems invalid (before 2025)
-  if (this->current_time_ < 1745000000 && this->current_time_ != 0) {
-    ESP_LOGV(TAG, "System time might not be synchronized yet (%ld)", (long) this->current_time_);
+
+  // Check for pending refresh from callbacks
+  if (this->pending_message_cache_refresh_.exchange(false)) {
+    this->refresh_message_cache();
+    update_ha_queue_size();
+  }
+
+  // Check for time test mode
+  if (this->time_test_mode_active_) {
+    // Run the time test mode state machine
+    run_time_test_mode();
+    return;
   }
 
   // Check for emergency messages first
   check_for_emergency_messages();
 
-  // Run the state machine
+  // State machine switch
   switch (this->state_) {
     case TRANSITION_MODE:
       run_transition_mode();
@@ -163,6 +163,9 @@ void B48DisplayController::loop() {
     check_expired_messages();
     last_expiry_check = millis();
   }
+
+  // Check if we should purge disabled messages (every 24 hours)
+  check_purge_interval();
 
   // Handle time synchronization with the display
   if (this->time_sync_interval_ > 0 && this->current_time_ > 0) {
@@ -208,6 +211,7 @@ void B48DisplayController::dump_config() {
 bool B48DisplayController::add_message(int priority, int line_number, int tarif_zone, const std::string &static_intro,
                                        const std::string &scrolling_message, const std::string &next_message_hint,
                                        int duration_seconds, const std::string &source_info, bool check_duplicates) {
+  bool success = false;
   // Determine if the message is ephemeral or persistent based on duration
   if (duration_seconds > 0 && duration_seconds < EPHEMERAL_DURATION_THRESHOLD_SECONDS) {
     // --- Handle Ephemeral Message (Not saved to DB) ---
@@ -234,8 +238,6 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
                this->ephemeral_messages_.size());
     }
 
-    update_ha_queue_size();  // Update HA sensor
-
     // After adding a new ephemeral message
     std::sort(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
               [](const std::shared_ptr<MessageEntry> &a, const std::shared_ptr<MessageEntry> &b) {
@@ -247,7 +249,7 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
       this->should_interrupt_ = true;
     }
 
-    return true;
+    success = true;
   } else {
     // --- Handle Persistent Message (Saved to DB) ---
     ESP_LOGD(TAG, "Adding persistent message (duration %ds >= %ds or <= 0): %s%s (len=%zu)", duration_seconds,
@@ -282,20 +284,13 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
         source_info.empty() ? "Persistent" : source_info, check_duplicates);
 
     if (success) {
-      ESP_LOGI(TAG, "Successfully added message to database. Refreshing cache.");
-      // Refresh cache and update HA sensor
-      if (refresh_message_cache()) {
-        ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
-        update_ha_queue_size();
-      } else {
-        ESP_LOGE(TAG, "Failed to refresh message cache after adding persistent message.");
-        // Message added to DB, but cache might be stale. Continue anyway.
-      }
+      ESP_LOGI(TAG, "Successfully added message to database. Triggering cache refresh.");
+      this->pending_message_cache_refresh_.store(true);
     } else {
       ESP_LOGE(TAG, "Failed to add message to database.");
     }
-    return success;
   }
+  return success;
 }
 
 bool B48DisplayController::update_message(int message_id, int priority, bool is_enabled, int line_number,
@@ -317,17 +312,7 @@ bool B48DisplayController::update_message(int message_id, int priority, bool is_
                                                               duration_seconds, source_info);
 
   if (success) {
-    ESP_LOGI(TAG, "Successfully updated message in database. Refreshing cache.");
-    // Refresh cache and update HA sensor
-    if (refresh_message_cache()) {
-      ESP_LOGD(TAG, "Message cache refreshed. Updating HA queue size.");
-      update_ha_queue_size();
-    } else {
-      ESP_LOGE(TAG, "Failed to refresh message cache after updating persistent message.");
-      // Message updated in DB, but cache might be stale. Continue anyway.
-    }
-  } else {
-    ESP_LOGE(TAG, "Failed to update message in database.");
+    this->pending_message_cache_refresh_.store(true);
   }
 
   return success;
@@ -342,13 +327,9 @@ bool B48DisplayController::delete_persistent_message(int message_id) {
   bool success = this->db_manager_->delete_persistent_message(message_id);
 
   if (success) {
-    // Refresh cache and update HA sensor
-    if (refresh_message_cache()) {
-      update_ha_queue_size();
-    } else {
-      ESP_LOGE(TAG, "Failed to refresh message cache after deleting persistent message.");
-    }
+    this->pending_message_cache_refresh_.store(true);
   }
+
   return success;
 }
 
@@ -381,17 +362,8 @@ bool B48DisplayController::wipe_and_reinitialize_database() {
     this->ephemeral_messages_.clear();
     ESP_LOGD(TAG, "Cleared ephemeral message cache.");
   }
-
-  // 4. Refresh persistent cache (should be empty now)
-  if (refresh_message_cache()) {
-    ESP_LOGD(TAG, "Refreshed message cache after wipe.");
-  } else {
-    ESP_LOGE(TAG, "Failed to refresh message cache after wipe.");
-    // Non-fatal, but indicates an issue
-  }
-
-  // 5. Update HA queue size sensor
-  update_ha_queue_size();
+  // Trigger refresh of message cache
+  this->pending_message_cache_refresh_.store(true);
 
   ESP_LOGW(TAG, "Database wipe and reinitialization complete.");
   return true;
@@ -472,11 +444,7 @@ void B48DisplayController::check_expired_messages() {
   if (persistent_expired > 0) {
     ESP_LOGI(TAG, "Expired %d persistent messages in database", persistent_expired);
     // Refresh cache and update HA sensor if changes occurred
-    if (refresh_message_cache()) {
-      update_ha_queue_size();
-    } else {
-      ESP_LOGE(TAG, "Failed to refresh cache after expiring persistent messages.");
-    }
+    this->pending_message_cache_refresh_.store(true);
   } else if (persistent_expired < 0) {
     ESP_LOGE(TAG, "Error checking persistent message expiry.");
   }
@@ -1123,6 +1091,59 @@ void B48DisplayController::display_startup_message(bool db_initialized) {
 
   loading_msg->priority = 75;
   send_commands_for_message(loading_msg);
+}
+
+// --- Database maintenance methods ---
+
+bool B48DisplayController::purge_disabled_messages() {
+  ESP_LOGI(TAG, "Purging disabled messages from database");
+
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Database manager not available, cannot purge messages");
+    return false;
+  }
+
+  int purged_count = this->db_manager_->purge_disabled_messages();
+
+  if (purged_count < 0) {
+    ESP_LOGE(TAG, "Error occurred during disabled message purge");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Successfully purged %d disabled messages", purged_count);
+
+  // Update the last purge time regardless of whether messages were found
+  this->last_purge_time_ = time(nullptr);
+
+  return true;
+}
+
+void B48DisplayController::check_purge_interval() {
+  // Skip if no database manager
+  if (!this->db_manager_) {
+    return;
+  }
+
+  // Get current time
+  time_t now = time(nullptr);
+
+  // Check if this is the first run (last_purge_time_ is 0)
+  if (this->last_purge_time_ == 0) {
+    this->last_purge_time_ = now;
+    ESP_LOGD(TAG, "Initialized last purge time to current time");
+    return;
+  }
+
+  // Calculate elapsed time in hours
+  double hours_elapsed = difftime(now, this->last_purge_time_) / 3600.0;
+
+  // Check if purge interval has elapsed
+  if (hours_elapsed >= this->purge_interval_hours_) {
+    ESP_LOGI(TAG, "Purge interval of %d hours elapsed (%.2f hours since last purge), starting automatic purge",
+             this->purge_interval_hours_, hours_elapsed);
+
+    this->purge_disabled_messages();
+  }
 }
 }  // namespace b48_display_controller
 }  // namespace esphome
