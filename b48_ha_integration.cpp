@@ -41,6 +41,9 @@ void B48HAIntegration::register_services_() {
   // Register service for database maintenance
   register_service(&B48HAIntegration::handle_purge_disabled_messages_service_, "purge_disabled_messages");
 
+  // Register service for filesystem stats
+  register_service(&B48HAIntegration::handle_display_filesystem_stats_service_, "display_filesystem_stats");
+
   ESP_LOGD(TAG, "Service registration complete.");
 }
 
@@ -134,6 +137,18 @@ void B48HAIntegration::handle_purge_disabled_messages_service_() {
     }
   } else {
     ESP_LOGE(TAG, "Cannot purge disabled messages - parent controller not available");
+  }
+}
+
+// Add implementation of the filesystem stats service handler (after the purge handler):
+void B48HAIntegration::handle_display_filesystem_stats_service_() {
+  ESP_LOGI(TAG, "Service display_filesystem_stats called. Displaying filesystem stats...");
+  
+  if (parent_) {
+    parent_->display_filesystem_stats();
+    ESP_LOGI(TAG, "Filesystem stats displayed via HA service");
+  } else {
+    ESP_LOGE(TAG, "Cannot display filesystem stats - parent controller not available");
   }
 }
 

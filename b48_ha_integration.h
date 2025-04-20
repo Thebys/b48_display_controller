@@ -50,6 +50,9 @@ class B48HAIntegration : public Component, public api::CustomAPIDevice {
   
   // Database maintenance service handlers
   void handle_purge_disabled_messages_service_();
+  
+  // Filesystem stats service handler
+  void handle_display_filesystem_stats_service_();
 
   // --- Member Variables ---
   B48DisplayController *parent_; // Pointer to the main controller component

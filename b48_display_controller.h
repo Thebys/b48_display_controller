@@ -124,6 +124,9 @@ class B48DisplayController : public Component {
   // Database maintenance methods
   bool purge_disabled_messages();
   int get_purge_interval_hours() const { return this->purge_interval_hours_; }
+  
+  // Filesystem stats method for HA
+  void display_filesystem_stats() { log_filesystem_stats(); }
 
  protected:
   // Database methods
@@ -233,6 +236,8 @@ class B48DisplayController : public Component {
   
   // Helper to schedule refresh of message cache on loopTask
   std::atomic<bool> pending_message_cache_refresh_{false};
+
+  void log_filesystem_stats();
 };
 
 }  // namespace b48_display_controller

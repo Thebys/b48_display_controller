@@ -879,11 +879,51 @@ void B48DisplayController::dump_database_for_diagnostics() {
 
 // Helper methods for setup to improve readability and avoid gotos
 
-bool B48DisplayController::initialize_filesystem() {
+void B48DisplayController::log_filesystem_stats() {
+  // check if LittleFS is available
+  if (!LittleFS.begin(false)) {
+    ESP_LOGE(TAG, "LittleFS is not available");
+    return;
+  }
+  ESP_LOGI(TAG, "========= FILESYSTEM STATS =========");
+
   // Log ESP32 heap information first
   ESP_LOGI(TAG, "ESP32 Memory - Free heap: %u bytes, Minimum free heap: %u bytes", ESP.getFreeHeap(),
            ESP.getMinFreeHeap());
 
+  // Get and log detailed storage information
+  size_t total_bytes = LittleFS.totalBytes();
+  size_t used_bytes = LittleFS.usedBytes();
+  size_t free_bytes = total_bytes - used_bytes;
+  float used_percent = (used_bytes * 100.0f) / total_bytes;
+
+  ESP_LOGI(TAG, "LittleFS storage:");
+  ESP_LOGI(TAG, "  Total space: %zu bytes (%.1f KB)", total_bytes, total_bytes / 1024.0f);
+  ESP_LOGI(TAG, "  Used space:  %zu bytes (%.1f KB)", used_bytes, used_bytes / 1024.0f);
+  ESP_LOGI(TAG, "  Free space:  %zu bytes (%.1f KB)", free_bytes, free_bytes / 1024.0f);
+  ESP_LOGI(TAG, "  Usage:       %.1f%%", used_percent);
+
+  // List files in the root directory to see what's taking up space
+  ESP_LOGI(TAG, "Files in LittleFS root:");
+  File root = LittleFS.open("/");
+  if (root && root.isDirectory()) {
+    File file = root.openNextFile();
+    int file_count = 0;
+    size_t total_listed_size = 0;
+    while (file) {  // Remove the limit to show all files
+      size_t file_size = file.size();
+      total_listed_size += file_size;
+      ESP_LOGI(TAG, "  %s: %zu bytes (%.1f KB)", file.name(), file_size, file_size / 1024.0f);
+      file = root.openNextFile();
+      file_count++;
+    }
+    ESP_LOGI(TAG, "Total: %d files using %zu bytes (%.1f KB)", file_count, total_listed_size,
+             total_listed_size / 1024.0f);
+  }
+  root.close();
+}
+
+bool B48DisplayController::initialize_filesystem() {
   ESP_LOGI(TAG, "Initializing LittleFS...");
 
   // Find the partition labeled "spiffs" or similar in the partition table
@@ -911,17 +951,9 @@ bool B48DisplayController::initialize_filesystem() {
     ESP_LOGI(TAG, "LittleFS mounted successfully without formatting.");
   }
 
-  // Get and log detailed storage information
+  // Get basic info needed for checks
   size_t total_bytes = LittleFS.totalBytes();
-  size_t used_bytes = LittleFS.usedBytes();
-  size_t free_bytes = total_bytes - used_bytes;
-  float used_percent = (used_bytes * 100.0f) / total_bytes;
-
-  ESP_LOGI(TAG, "LittleFS storage:");
-  ESP_LOGI(TAG, "  Total space: %zu bytes (%.1f KB)", total_bytes, total_bytes / 1024.0f);
-  ESP_LOGI(TAG, "  Used space:  %zu bytes (%.1f KB)", used_bytes, used_bytes / 1024.0f);
-  ESP_LOGI(TAG, "  Free space:  %zu bytes (%.1f KB)", free_bytes, free_bytes / 1024.0f);
-  ESP_LOGI(TAG, "  Usage:       %.1f%%", used_percent);
+  size_t free_bytes = total_bytes - LittleFS.usedBytes();
 
   ESP_LOGI(TAG, "  Partition:   %u bytes (%.1f KB)", spiffs_partition->size, spiffs_partition->size / 1024.0f);
 
@@ -940,24 +972,8 @@ bool B48DisplayController::initialize_filesystem() {
     return false;
   }
 
-  // List files in the root directory to see what's taking up space
-  ESP_LOGI(TAG, "Files in LittleFS root:");
-  File root = LittleFS.open("/");
-  if (root && root.isDirectory()) {
-    File file = root.openNextFile();
-    int file_count = 0;
-    size_t total_listed_size = 0;
-    while (file) {  // Remove the limit to show all files
-      size_t file_size = file.size();
-      total_listed_size += file_size;
-      ESP_LOGI(TAG, "  %s: %zu bytes (%.1f KB)", file.name(), file_size, file_size / 1024.0f);
-      file = root.openNextFile();
-      file_count++;
-    }
-    ESP_LOGI(TAG, "Total: %d files using %zu bytes (%.1f KB)", file_count, total_listed_size,
-             total_listed_size / 1024.0f);
-  }
-  root.close();
+  // Log filesystem stats again after mounting to show what's really available
+  log_filesystem_stats();
 
   return true;
 }
@@ -1111,6 +1127,12 @@ bool B48DisplayController::purge_disabled_messages() {
   }
 
   ESP_LOGI(TAG, "Successfully purged %d disabled messages", purged_count);
+
+  // Log filesystem stats after purge
+  if (purged_count > 0) {
+    ESP_LOGI(TAG, "Filesystem stats after purge:");
+    log_filesystem_stats();
+  }
 
   // Update the last purge time regardless of whether messages were found
   this->last_purge_time_ = time(nullptr);
