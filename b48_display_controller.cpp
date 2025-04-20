@@ -528,6 +528,9 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
                 [](const std::pair<std::shared_ptr<MessageEntry>, float> &a,
                    const std::pair<std::shared_ptr<MessageEntry>, float> &b) { return a.second > b.second; });
 
+      // Create a vector to store penalty information for the final table
+      std::vector<std::tuple<std::shared_ptr<MessageEntry>, float, float, time_t>> penalty_info;
+      
       // Penalize or remove candidates that have been displayed recently
       time_t now = time(nullptr);
       const int MIN_REPEAT_SECONDS = 180;  // Minimum seconds before showing same message again
@@ -535,6 +538,7 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
       for (auto &candidate : candidates) {
         auto &msg = candidate.first;
         time_t last_display = 0;
+        float original_weight = candidate.second;
 
         // Get appropriate last display time based on message type
         if (msg->is_ephemeral) {
@@ -547,27 +551,29 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
           }
         }
 
-        // Skip penalty if never displayed or displayed long ago
-        if (last_display == 0)
-          continue;
-
         // Calculate time since last display
-        time_t time_since_display = now - last_display;
+        time_t time_since_display = (last_display > 0) ? now - last_display : -1;
+        float penalty_factor = 1.0f;
 
-        if (time_since_display < MIN_REPEAT_SECONDS) {
-          // High penalty for very recent messages - 90% weight reduction
-          candidate.second *= 0.2f;
-          ESP_LOGD(TAG, "Message %d penalized heavily (%.1f seconds ago)", msg->message_id, (float) time_since_display);
-        } else if (time_since_display < MIN_REPEAT_SECONDS * 3) {
-          // Medium penalty - 50% weight reduction
-          candidate.second *= 0.5f;
-          ESP_LOGD(TAG, "Message %d penalized moderately (%.1f seconds ago)", msg->message_id,
-                   (float) time_since_display);
-        } else if (time_since_display < MIN_REPEAT_SECONDS * 18) {
-          // Light penalty - 20% weight reduction
-          candidate.second *= 0.8f;
-          ESP_LOGD(TAG, "Message %d penalized lightly (%.1f seconds ago)", msg->message_id, (float) time_since_display);
+        // Apply penalties based on how recently the message was displayed
+        if (last_display > 0) {
+          if (time_since_display < MIN_REPEAT_SECONDS) {
+            // High penalty for very recent messages - 80% weight reduction
+            penalty_factor = 0.2f;
+          } else if (time_since_display < MIN_REPEAT_SECONDS * 3) {
+            // Medium penalty - 50% weight reduction
+            penalty_factor = 0.5f;
+          } else if (time_since_display < MIN_REPEAT_SECONDS * 18) {
+            // Light penalty - 20% weight reduction
+            penalty_factor = 0.8f;
+          }
+          
+          // Apply the penalty
+          candidate.second *= penalty_factor;
         }
+        
+        // Store all the info for the table
+        penalty_info.push_back(std::make_tuple(msg, original_weight, penalty_factor, time_since_display));
       }
 
       // Resort after applying penalties
@@ -575,14 +581,58 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
                 [](const std::pair<std::shared_ptr<MessageEntry>, float> &a,
                    const std::pair<std::shared_ptr<MessageEntry>, float> &b) { return a.second > b.second; });
 
-      // Log top 6 candidates (or fewer if less available)
-      const int candidates_to_log = std::min(6, static_cast<int>(candidates.size()));
-      ESP_LOGI(TAG, "Top %d candidates after weighting and penalties:", candidates_to_log);
+      // Sort penalty_info to match the new candidate order
+      std::sort(penalty_info.begin(), penalty_info.end(), 
+                [&candidates](const std::tuple<std::shared_ptr<MessageEntry>, float, float, time_t> &a,
+                             const std::tuple<std::shared_ptr<MessageEntry>, float, float, time_t> &b) {
+                    // Find weights in the sorted candidates list
+                    float weight_a = 0.0f, weight_b = 0.0f;
+                    for (const std::pair<std::shared_ptr<MessageEntry>, float> &c : candidates) {
+                        if (c.first == std::get<0>(a)) weight_a = c.second;
+                        if (c.first == std::get<0>(b)) weight_b = c.second;
+                    }
+                    return weight_a > weight_b;
+                });
+
+      // Log the consolidated table
+      ESP_LOGI(TAG, "Message selection table (%d candidates):", candidates.size());
+      ESP_LOGI(TAG, "  # | ID  | Type       | Prio | Initial | Penalty | Final  | Last Seen");
+      ESP_LOGI(TAG, "----|-----|------------|------|---------|---------|--------|----------");
+      
+      const int candidates_to_log = std::min(20, static_cast<int>(penalty_info.size()));
       for (int i = 0; i < candidates_to_log; i++) {
-        const auto &candidate = candidates[i];
-        ESP_LOGI(TAG, "  #%d: ID=%d, Type=%s, Priority=%d, Weight=%.3f", i + 1, candidate.first->message_id,
-                 candidate.first->is_ephemeral ? "ephemeral" : "persistent", candidate.first->priority,
-                 candidate.second);
+        const auto &info = penalty_info[i];
+        auto msg = std::get<0>(info);
+        float original_weight = std::get<1>(info);
+        float penalty_factor = std::get<2>(info);
+        time_t time_since_display = std::get<3>(info);
+        
+        // Find the final weight in candidates
+        float final_weight = 0.0f;
+        for (const auto &c : candidates) {
+            if (c.first == msg) {
+                final_weight = c.second;
+                break;
+            }
+        }
+        
+        const char* selected_marker = (i == 0) ? "→ " : "  ";
+        
+        // Format the time since display
+        std::string time_display;
+        if (time_since_display < 0) {
+            time_display = "never";
+        } else {
+            char time_buffer[16];
+            snprintf(time_buffer, sizeof(time_buffer), "%ds ago", (int)time_since_display);
+            time_display = time_buffer;
+        }
+        
+        ESP_LOGI(TAG, "%s%2d | %-3d | %-10s | %4d | %7.3f | %7.3f | %6.3f | %s",
+                 selected_marker, i+1, msg->message_id, 
+                 msg->is_ephemeral ? "ephemeral" : "persistent",
+                 msg->priority, original_weight, penalty_factor, final_weight,
+                 time_display.c_str());
       }
 
       // Select the highest weighted candidate
