@@ -1034,7 +1034,7 @@ std::string B48DatabaseManager::convert_to_ascii(const std::string &str) {
 
         // Fallback for other non-ASCII chars
         default:
-          result += '_';
+          result += '?';
           break;
       }
     }

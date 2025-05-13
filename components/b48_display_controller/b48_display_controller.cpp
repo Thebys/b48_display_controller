@@ -112,6 +112,7 @@ void B48DisplayController::setup() {
   // Start with transition mode
   this->state_ = TRANSITION_MODE;
   this->state_change_time_ = millis();
+  this->first_cycle_in_state_ = true;
 
   // Note: we don't mark the component as failed even without a database
   // Since it can still work in ephemeral-only mode
@@ -791,24 +792,36 @@ void B48DisplayController::run_transition_mode() {
   unsigned long time_in_state = millis() - this->state_change_time_;
   unsigned long transition_duration_ms = this->transition_duration_ * 1000;
 
-  // If this is our first entry to this state, log and setup
-  if (time_in_state < 10 || this->should_interrupt_) {
-    ESP_LOGD(TAG, "========= WELCOME TO TRANSITION MODE =========");
+  // Determine if setup logic needs to run (first cycle in this state or an interrupt)
+  bool needs_setup_logic = this->first_cycle_in_state_ || this->should_interrupt_;
+
+  if (needs_setup_logic) {
+    ESP_LOGD(TAG, "========= TRANSITION MODE (%s) =========",
+             this->first_cycle_in_state_ ? "entry" : "interrupt");
+
     if (this->should_interrupt_) {
-      transition_duration_ms = 0;
-      this->should_interrupt_ = false;
+      transition_duration_ms = 0; // Interrupt forces a quick transition after setup
+      this->should_interrupt_ = false;    // Consume the interrupt flag
     }
-    ESP_LOGD(TAG, "Current message: %d", this->current_message_ ? this->current_message_->message_id : 0);
+
+    ESP_LOGD(TAG, "Current message before select_next_message(): %s",
+             this->current_message_ ? std::to_string(this->current_message_->message_id).c_str() : "none");
     this->serial_protocol_.switch_to_cycle(6);
     this->current_message_ = select_next_message();
 
     if (this->current_message_) {
       send_commands_for_message(this->current_message_);
-      ESP_LOGD(TAG, "Message prepared, waiting in cycle 6 for %d seconds", this->transition_duration_);
+      ESP_LOGD(TAG, "Message prepared (ID: %d), waiting in cycle 6 for %lu ms",
+               this->current_message_->message_id, transition_duration_ms);
     } else {
       display_fallback_message();
-      ESP_LOGD(TAG, "No message selected, displaying fallback, waiting in cycle 6 for %d seconds",
-               this->transition_duration_);
+      ESP_LOGD(TAG, "No message selected, displaying fallback, waiting in cycle 6 for %lu ms",
+               transition_duration_ms);
+    }
+
+    // Clear the flag after the setup logic has run for this state entry
+    if (this->first_cycle_in_state_) {
+      this->first_cycle_in_state_ = false;
     }
   }
 
@@ -819,11 +832,13 @@ void B48DisplayController::run_transition_mode() {
   }
 
   // Transition duration has elapsed, switch to cycle 0 and move to display mode
-  ESP_LOGD(TAG, "Transition duration elapsed, spending %d ms", time_in_state);
+  ESP_LOGD(TAG, "Transition duration (%lu ms) elapsed (actual time in state: %lu ms). Switching to display.",
+           transition_duration_ms, time_in_state);
   this->serial_protocol_.switch_to_cycle(0);
 
   this->state_ = DISPLAY_MESSAGE;
   this->state_change_time_ = millis();
+  this->first_cycle_in_state_ = true; // Set for the next state's first cycle
 }
 
 void B48DisplayController::run_display_message() {
@@ -837,6 +852,7 @@ void B48DisplayController::run_display_message() {
     this->current_message_ = nullptr;                      // Clear current message
     this->state_ = TRANSITION_MODE;
     this->state_change_time_ = millis();
+    this->first_cycle_in_state_ = true;
   }
 }
 
@@ -900,6 +916,7 @@ void B48DisplayController::check_for_emergency_messages() {
     update_message_display_stats(this->current_message_);  // Update stats before transitioning
     this->state_ = TRANSITION_MODE;                        // Force transition to pick up new message
     this->state_change_time_ = millis();
+    this->first_cycle_in_state_ = true;
   }
 }
 
