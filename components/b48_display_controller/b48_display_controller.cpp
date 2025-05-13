@@ -265,9 +265,22 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
     success = true;
   } else {
     // --- Handle Persistent Message (Saved to DB) ---
-    ESP_LOGD(TAG, "Adding persistent message (duration %ds >= %ds or <= 0): %s%s (len=%zu)", duration_seconds,
-             EPHEMERAL_DURATION_THRESHOLD_SECONDS, scrolling_message.substr(0, 30).c_str(),
-             scrolling_message.length() > 30 ? "..." : "", scrolling_message.length());
+    if (duration_seconds == 0) {
+        ESP_LOGD(TAG, "Adding permanent persistent message (duration 0s): %s%s (len=%zu)",
+                 scrolling_message.substr(0, 30).c_str(),
+                 scrolling_message.length() > 30 ? "..." : "", scrolling_message.length());
+    } else if (duration_seconds < 0) {
+        // This case should ideally be sanitized earlier or indicate an issue.
+        // For now, log it clearly; database layer might treat negative as permanent or apply default.
+        ESP_LOGD(TAG, "Adding persistent message (invalid negative duration %ds, will be treated as persistent): %s%s (len=%zu)",
+                 duration_seconds, scrolling_message.substr(0, 30).c_str(),
+                 scrolling_message.length() > 30 ? "..." : "", scrolling_message.length());
+    } else { // duration_seconds >= EPHEMERAL_DURATION_THRESHOLD_SECONDS
+        ESP_LOGD(TAG, "Adding long-duration persistent message (duration %ds >= %ds threshold): %s%s (len=%zu)",
+                 duration_seconds, EPHEMERAL_DURATION_THRESHOLD_SECONDS,
+                 scrolling_message.substr(0, 30).c_str(),
+                 scrolling_message.length() > 30 ? "..." : "", scrolling_message.length());
+    }
 
     if (!this->db_manager_) {
       ESP_LOGW(TAG, "Database manager is not initialized - converting to ephemeral message");
