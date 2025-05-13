@@ -75,12 +75,12 @@ class B48DatabaseManager {
   // Bootstrapping
   bool bootstrap_default_messages();
 
+  // Convert non-ASCII characters to their ASCII equivalents
+  static std::string convert_to_ascii(const std::string &str);
+
  private:
   // Helper for schema creation/migration
   bool check_and_create_schema(); 
-
-  // Convert non-ASCII characters to their ASCII equivalents
-  std::string convert_to_ascii(const std::string &str);
 
   std::string database_path_;
   sqlite3 *db_{nullptr};
