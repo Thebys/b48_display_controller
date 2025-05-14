@@ -1506,11 +1506,45 @@ void B48DisplayController::stop_character_reverse_test_mode() {
 
 // --- Raw BUSE Command and State Machine Control Implementations ---
 void B48DisplayController::send_raw_buse_command(const std::string &raw_payload) {
-  ESP_LOGD(TAG, "Received request to send raw BUSE command: \"%s\"", raw_payload.c_str());
+  ESP_LOGD(TAG, "Received HA request to send raw BUSE command (raw input): \"%s\"", raw_payload.c_str());
+
+  std::string processed_payload;
+  processed_payload.reserve(raw_payload.length()); // Pre-allocate for efficiency
+
+  for (size_t i = 0; i < raw_payload.length(); ++i) {
+    if (raw_payload[i] == '\\' && (i + 3) < raw_payload.length()) { // Check for \xHH pattern
+      if ((raw_payload[i+1] == 'x' || raw_payload[i+1] == 'X') && 
+          isxdigit(raw_payload[i+2]) && isxdigit(raw_payload[i+3])) {
+        char hex_chars[3] = {raw_payload[i+2], raw_payload[i+3], '\0'};
+        long byte_val = strtol(hex_chars, nullptr, 16);
+        processed_payload.push_back(static_cast<char>(byte_val));
+        i += 3; // Advance past \xHH
+        ESP_LOGV(TAG, "Parsed hex escape: \\%c%c%c -> 0x%02X", raw_payload[i+1], raw_payload[i+2], raw_payload[i+3], static_cast<unsigned char>(byte_val));
+      } else {
+        // Not a valid \xHH sequence, treat backslash literally or as part of something else
+        processed_payload.push_back(raw_payload[i]);
+        ESP_LOGV(TAG, "Treating as literal: %c", raw_payload[i]);
+      }
+    } else {
+      processed_payload.push_back(raw_payload[i]);
+      ESP_LOGV(TAG, "Treating as literal: %c", raw_payload[i]);
+    }
+  }
+  
+  ESP_LOGD(TAG, "Processed payload for BUSE: (len %d) \"%s\"", processed_payload.length(), processed_payload.c_str());
+  // For more detailed byte logging if needed:
+  // std::string debug_bytes_str;
+  // for (char c : processed_payload) {
+  //   char hex_buf[4];
+  //   snprintf(hex_buf, sizeof(hex_buf), "%02X ", static_cast<unsigned char>(c));
+  //   debug_bytes_str += hex_buf;
+  // }
+  // ESP_LOGD(TAG, "Processed payload bytes: %s", debug_bytes_str.c_str());
+
   // Allow raw commands if state machine is paused OR if a test mode that takes over display is active.
   if (this->state_machine_paused_.load() || this->character_reverse_test_mode_active_ || this->time_test_mode_active_) {
-    this->serial_protocol_.send_raw_payload(raw_payload);
-    ESP_LOGI(TAG, "Raw BUSE command sent: \"%s\"", raw_payload.c_str());
+    this->serial_protocol_.send_raw_payload(processed_payload); // Send the processed payload
+    ESP_LOGI(TAG, "Processed raw BUSE command sent.");
   } else {
     ESP_LOGW(TAG, "Raw BUSE command NOT sent. State machine must be paused, or a test mode (char/time test) must be active.");
   }
