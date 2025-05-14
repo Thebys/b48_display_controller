@@ -117,6 +117,7 @@ void B48DisplayController::setup() {
   // Note: we don't mark the component as failed even without a database
   // Since it can still work in ephemeral-only mode
   ESP_LOGI(TAG, "B48 Display Controller setup complete - %s", db_initialized ? "with database" : "in no-database mode");
+
 }
 void B48DisplayController::loop() {
   // Update current time using standard C time
@@ -148,6 +149,9 @@ void B48DisplayController::loop() {
       break;
     case TIME_TEST_MODE:
       run_time_test_mode();
+      break;
+    case CHARACTER_REVERSE_TEST_MODE:
+      run_character_reverse_test_mode();
       break;
   }
 
@@ -1259,5 +1263,226 @@ void B48DisplayController::check_purge_interval() {
     this->purge_disabled_messages();
   }
 }
+
+// Add the time test mode methods:
+
+void B48DisplayController::start_time_test_mode() {
+  if (this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode already active");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Starting time test mode");
+  this->time_test_mode_active_ = true;
+  this->current_time_test_value_ = 0;
+  this->last_time_test_update_ = millis();
+  this->state_ = TIME_TEST_MODE;
+  this->state_change_time_ = millis();
+
+  // Send intro message
+  auto test_msg = std::make_shared<MessageEntry>();
+  test_msg->message_id = -1;
+  test_msg->line_number = 99;
+  test_msg->tarif_zone = 999;
+  test_msg->static_intro = "Time Test";
+  test_msg->scrolling_message = "Testing time values from u0000 to u2459";
+  test_msg->next_message_hint = "Testing";
+  test_msg->priority = 100;
+  send_commands_for_message(test_msg);
+
+  // Prepare for first time value
+  switch_to_cycle(6);  // Make sure we're in the main cycle
+}
+
+void B48DisplayController::stop_time_test_mode() {
+  if (!this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode not active");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Stopping time test mode");
+  this->time_test_mode_active_ = false;
+
+  // Return to normal operation
+  this->state_ = TRANSITION_MODE;
+  this->state_change_time_ = millis();
+
+  // Send completion message
+  auto completion_msg = std::make_shared<MessageEntry>();
+  completion_msg->message_id = -1;
+  completion_msg->line_number = 48;
+  completion_msg->tarif_zone = 0;
+  completion_msg->static_intro = "Test Done";
+  completion_msg->scrolling_message = "Time test complete. Returning to normal operation.";
+  completion_msg->next_message_hint = "Normal";
+  completion_msg->priority = 100;
+  send_commands_for_message(completion_msg);
+}
+
+void B48DisplayController::run_time_test_mode() {
+  // Check if we should stop the test
+  if (!this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Time test mode flag is false, stopping");
+    this->state_ = TRANSITION_MODE;
+    this->state_change_time_ = millis();
+    return;
+  }
+
+  // Check if we completed all time values
+  if (this->current_time_test_value_ > 2459) {
+    ESP_LOGI(TAG, "Time test complete, all values sent");
+    stop_time_test_mode();
+    return;
+  }
+
+  // Send time update at regular intervals
+  unsigned long now = millis();
+  if (now - this->last_time_test_update_ >= TIME_TEST_INTERVAL_MS) {
+    // Calculate current time value (hour and minute)
+    int hour = this->current_time_test_value_ / 100;
+    int minute = this->current_time_test_value_ % 100;
+
+    // Log the test progress periodically
+    if (this->current_time_test_value_ % 100 == 0) {
+      ESP_LOGI(TAG, "Time test progress: u%04d", this->current_time_test_value_);
+    } else {
+      ESP_LOGD(TAG, "Time test: u%04d", this->current_time_test_value_);
+    }
+
+    // Send the time value directly
+    this->serial_protocol_.send_time_update(hour, minute);
+    switch_to_cycle(0);
+    switch_to_cycle(6);
+    yield();
+    esp_task_wdt_reset();
+
+    // Increment the value for next iteration
+    this->current_time_test_value_++;
+
+    // Update the last update time
+    this->last_time_test_update_ = now;
+  }
+}
+
+// --- Character Reverse Test Mode ---
+void B48DisplayController::start_character_reverse_test_mode() {
+  if (this->time_test_mode_active_) {
+    ESP_LOGW(TAG, "Cannot start character reverse test mode while time test mode is active.");
+    return;
+  }
+  if (this->character_reverse_test_mode_active_) {
+    ESP_LOGW(TAG, "Character reverse test mode is already active.");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Starting character reverse test mode (segmented messages). Interval: %lu ms", CHARACTER_TEST_INTERVAL_MS);
+  this->character_reverse_test_mode_active_ = true;
+  this->current_character_test_value_ = 0; // Start iteration from character 0
+  this->last_character_test_update_ = millis(); 
+  this->first_cycle_in_state_ = true; // Ensure message sends on first run cycle
+
+  this->state_ = CHARACTER_REVERSE_TEST_MODE; // Set state
+  this->serial_protocol_.switch_to_cycle(0); // Prepare for test display
+}
+
+void B48DisplayController::run_character_reverse_test_mode() {
+  if (!this->character_reverse_test_mode_active_) {
+    this->serial_protocol_.switch_to_cycle(0);
+    return;
+  }
+
+  unsigned long current_millis = millis();
+  if (this->first_cycle_in_state_ || (current_millis - this->last_character_test_update_ >= CHARACTER_TEST_INTERVAL_MS)) {
+    this->last_character_test_update_ = current_millis;
+
+    if (this->current_character_test_value_ > 255) { // Check if we've completed a full cycle
+        this->current_character_test_value_ = 0; // Loop back to the beginning
+        ESP_LOGI(TAG, "Character Test: Full cycle complete, restarting from char 0.");
+    }
+
+    std::string scrolling_message_segment = "";
+    int chars_in_segment = 0;
+    const int MAX_SEGMENT_PAYLOAD_LEN = 200; // Max length for the character data part
+    int char_code_iterator = this->current_character_test_value_;
+
+    while (char_code_iterator <= 255) {
+      std::string char_entry = std::to_string(char_code_iterator) + ": ";
+      char_entry += static_cast<char>(char_code_iterator);
+      char_entry += " - "; // Space separator
+
+      if (scrolling_message_segment.length() + char_entry.length() > MAX_SEGMENT_PAYLOAD_LEN) {
+        if (scrolling_message_segment.empty()) { // Single entry is too long (should not happen with this format)
+             ESP_LOGE(TAG, "Character entry for code %d is too long for segment by itself! Skipping.", char_code_iterator);
+             char_code_iterator++; // Skip this problematic character to avoid infinite loop
+        }
+        break; // Current segment is full
+      }
+      scrolling_message_segment += char_entry;
+      chars_in_segment++;
+      char_code_iterator++;
+    }
+
+    if (scrolling_message_segment.empty() && this->current_character_test_value_ <= 255) {
+        // This case might happen if all remaining characters were skipped or if current_character_test_value_ was > 255 initially and got reset.
+        // If it was reset, the next cycle will pick up from 0.
+        // If characters were skipped, we need to advance current_character_test_value_ past them.
+        if (char_code_iterator > this->current_character_test_value_) {
+             this->current_character_test_value_ = char_code_iterator;
+        }
+        ESP_LOGW(TAG, "Character Test: No characters added to current segment. Start char code: %d", this->current_character_test_value_);
+        // Potentially allow a loop without sending if nothing was added, or ensure current_character_test_value_ advances.
+        // Forcing first_cycle_in_state_ to false ensures we don't get stuck if interval is long
+        if (this->first_cycle_in_state_) {
+          this->first_cycle_in_state_ = false;
+        }
+        return; // Skip sending an empty message, wait for next interval
+    }
+    
+    auto test_msg = std::make_shared<MessageEntry>();
+    test_msg->line_number = 48; 
+    test_msg->tarif_zone = 101; 
+    test_msg->static_intro = "Char test 255"; 
+    test_msg->scrolling_message = scrolling_message_segment;
+    test_msg->next_message_hint = "Test complete.";
+    test_msg->is_ephemeral = true;
+
+    ESP_LOGD(TAG, "Character Test: Sending segment (starting %d, %d chars, len %zu): %s", 
+             this->current_character_test_value_, chars_in_segment, scrolling_message_segment.length(), 
+             scrolling_message_segment.substr(0, 80).c_str()); // Log first 80 chars of segment
+    
+    this->serial_protocol_.switch_to_cycle(0); 
+    send_commands_for_message(test_msg);
+
+    this->current_character_test_value_ = char_code_iterator; // Next segment starts where this one left off
+
+    if (this->first_cycle_in_state_) {
+      this->first_cycle_in_state_ = false; 
+    }
+  }
+}
+
+void B48DisplayController::stop_character_reverse_test_mode() {
+  if (this->character_reverse_test_mode_active_) {
+    this->character_reverse_test_mode_active_ = false;
+    ESP_LOGI(TAG, "Character reverse test mode stopped.");
+    // No inversion on stop
+    this->serial_protocol_.switch_to_cycle(0); 
+    
+    auto stop_msg = std::make_shared<MessageEntry>();
+    stop_msg->line_number = 48;
+    stop_msg->tarif_zone = 101;
+    stop_msg->static_intro = "CHAR TEST";
+    stop_msg->scrolling_message = "ENDED";
+    stop_msg->next_message_hint = "";
+    stop_msg->is_ephemeral = true;
+    send_commands_for_message(stop_msg);
+    
+    this->state_ = TRANSITION_MODE;
+    this->state_change_time_ = millis();
+    this->first_cycle_in_state_ = true;
+    this->should_interrupt_ = true; 
+  }
+}
+
 }  // namespace b48_display_controller
 }  // namespace esphome

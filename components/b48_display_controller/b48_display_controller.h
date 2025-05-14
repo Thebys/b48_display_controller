@@ -38,7 +38,8 @@ enum DisplayState {
   TRANSITION_MODE,
   MESSAGE_PREPARATION,
   DISPLAY_MESSAGE,
-  TIME_TEST_MODE  // New state for time test mode
+  TIME_TEST_MODE,  // New state for time test mode
+  CHARACTER_REVERSE_TEST_MODE  // New state for character reverse test mode
 };
 
 class B48DisplayController : public Component {
@@ -120,8 +121,15 @@ class B48DisplayController : public Component {
 
   // Time test mode public methods
   void start_time_test_mode();
+  void run_time_test_mode();
   void stop_time_test_mode();
   bool is_time_test_mode_active() const { return time_test_mode_active_; }
+  
+  // Character reverse test mode methods
+  void start_character_reverse_test_mode();
+  void run_character_reverse_test_mode();
+  void stop_character_reverse_test_mode();
+  bool is_character_reverse_test_mode_active() const { return character_reverse_test_mode_active_; }
 
   // Database maintenance methods
   bool purge_disabled_messages();
@@ -173,15 +181,11 @@ class B48DisplayController : public Component {
   bool testLittleFSMount();
   bool testSqliteBasicOperations();
   bool testSerialProtocol();
+  bool executeTest(bool (B48DisplayController::*testMethod)(), const char* testName);
 
   // Add new test declarations above here
 
-  // Add new state machine method for time test mode
-  void run_time_test_mode();
-
  private:  // Helper for test execution
-  bool executeTest(bool (B48DisplayController::*testMethod)(), const char *testName);
-
   // Member variables
   uart::UARTComponent *uart_{nullptr};
   std::string database_path_;
@@ -228,9 +232,15 @@ class B48DisplayController : public Component {
 
   // Time test mode variables
   bool time_test_mode_active_{false};
-  unsigned int current_time_test_value_{0};
+  int current_time_test_value_{0}; // Will count from 0 to 2459
   unsigned long last_time_test_update_{0};
-  static constexpr unsigned long TIME_TEST_INTERVAL_MS = 800;  // Update every 800ms
+  static constexpr unsigned long TIME_TEST_INTERVAL_MS = 500; // 500ms between updates
+  
+  // Character reverse test mode variables
+  bool character_reverse_test_mode_active_{false};
+  int current_character_test_value_{0}; // Character code to test
+  unsigned long last_character_test_update_{0};
+  static constexpr unsigned long CHARACTER_TEST_INTERVAL_MS = 30000; // 1 minute between updates
 
   // Database maintenance variables
   time_t last_purge_time_{0};

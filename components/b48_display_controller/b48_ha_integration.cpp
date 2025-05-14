@@ -38,6 +38,14 @@ void B48HAIntegration::register_services_() {
   register_service(&B48HAIntegration::handle_start_time_test_service_, "start_time_test");
   register_service(&B48HAIntegration::handle_stop_time_test_service_, "stop_time_test");
   
+  // Register services for character reverse test mode
+  register_service(&B48HAIntegration::handle_start_character_reverse_test_service_, "start_character_reverse_test");
+  register_service(&B48HAIntegration::handle_stop_character_reverse_test_service_, "stop_character_reverse_test");
+  
+  // Add shorter aliases
+  register_service(&B48HAIntegration::handle_start_character_reverse_test_service_, "start_char_test");
+  register_service(&B48HAIntegration::handle_stop_character_reverse_test_service_, "stop_char_test");
+  
   // Register service for database maintenance
   register_service(&B48HAIntegration::handle_purge_disabled_messages_service_, "purge_disabled_messages");
 
@@ -120,6 +128,38 @@ void B48HAIntegration::handle_stop_time_test_service_() {
     ESP_LOGI(TAG, "Time test mode stopped via HA service");
   } else {
     ESP_LOGE(TAG, "Cannot stop time test mode - parent controller not available");
+  }
+}
+
+// --- Character Reverse Test Service Handlers ---
+
+void B48HAIntegration::handle_start_character_reverse_test_service_() {
+  ESP_LOGI(TAG, "Service start_character_reverse_test called. Starting character reverse test mode...");
+  
+  if (parent_) {
+    if (parent_->is_character_reverse_test_mode_active()) {
+      ESP_LOGW(TAG, "Character reverse test mode is already active");
+      return;
+    }
+    parent_->start_character_reverse_test_mode();
+    ESP_LOGI(TAG, "Character reverse test mode started via HA service");
+  } else {
+    ESP_LOGE(TAG, "Cannot start character reverse test mode - parent controller not available");
+  }
+}
+
+void B48HAIntegration::handle_stop_character_reverse_test_service_() {
+  ESP_LOGI(TAG, "Service stop_character_reverse_test called. Stopping character reverse test mode...");
+  
+  if (parent_) {
+    if (!parent_->is_character_reverse_test_mode_active()) {
+      ESP_LOGW(TAG, "Character reverse test mode is not active");
+      return;
+    }
+    parent_->stop_character_reverse_test_mode();
+    ESP_LOGI(TAG, "Character reverse test mode stopped via HA service");
+  } else {
+    ESP_LOGE(TAG, "Cannot stop character reverse test mode - parent controller not available");
   }
 }
 

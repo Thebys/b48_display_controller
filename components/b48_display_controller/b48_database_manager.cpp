@@ -1059,8 +1059,8 @@ std::string B48DatabaseManager::convert_to_ascii(const std::string &str) {
             case 0xC485: replacement = 'a'; break; // ą
             case 0xC486: replacement = 'C'; break; // Ć
             case 0xC487: replacement = 'c'; break; // ć
-            case 0C498: replacement = 'E'; break; // Ę
-            case 0C499: replacement = 'e'; break; // ę
+            case 0xC498: replacement = 'E'; break; // Ę
+            case 0xC499: replacement = 'e'; break; // ę
             case 0xC581: replacement = 'L'; break; // Ł
             case 0xC582: replacement = 'l'; break; // ł
             case 0xC583: replacement = 'N'; break; // Ń

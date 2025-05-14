@@ -48,6 +48,11 @@ class B48HAIntegration : public Component, public api::CustomAPIDevice {
   
   void handle_stop_time_test_service_();
   
+  // Character reverse test mode service handlers
+  void handle_start_character_reverse_test_service_();
+  
+  void handle_stop_character_reverse_test_service_();
+  
   // Database maintenance service handlers
   void handle_purge_disabled_messages_service_();
   
