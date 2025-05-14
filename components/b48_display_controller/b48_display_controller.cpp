@@ -233,9 +233,9 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
   if (duration_seconds > 0 && duration_seconds < EPHEMERAL_DURATION_THRESHOLD_SECONDS) {
     // --- Handle Ephemeral Message (Not saved to DB) ---
     // Convert strings to ASCII first
-    std::string safe_static_intro = static_intro;  //B48DatabaseManager::convert_to_ascii(static_intro);
-    std::string safe_scrolling_message = scrolling_message; //B48DatabaseManager::convert_to_ascii(scrolling_message);
-    std::string safe_next_message_hint = next_message_hint; //B48DatabaseManager::convert_to_ascii(next_message_hint);
+    std::string safe_static_intro = B48DatabaseManager::convert_to_ascii(static_intro);
+    std::string safe_scrolling_message = B48DatabaseManager::convert_to_ascii(scrolling_message);
+    std::string safe_next_message_hint = B48DatabaseManager::convert_to_ascii(next_message_hint);
 
     ESP_LOGD(TAG, "Adding ephemeral message (duration %ds < %ds): %s%s (len=%zu)", duration_seconds,
              EPHEMERAL_DURATION_THRESHOLD_SECONDS, safe_scrolling_message.substr(0, 30).c_str(),
@@ -642,9 +642,9 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
                 });
 
       // Log the consolidated table
-      ESP_LOGI(TAG, "Message selection table (%d candidates):", candidates.size());
-      ESP_LOGI(TAG, "  # | ID  | Type       | Prio | Initial | Penalty | Final  | Last Seen");
-      ESP_LOGI(TAG, "----|-----|------------|------|---------|---------|--------|----------");
+      ESP_LOGD(TAG, "Message selection table (%d candidates):", candidates.size());
+      ESP_LOGD(TAG, "  # | ID  | Type       | Prio | Initial | Weight  | Final  | Last Seen");
+      ESP_LOGD(TAG, "----|-----|------------|------|---------|---------|--------|----------");
       
       const int candidates_to_log = std::min(20, static_cast<int>(penalty_info.size()));
       for (int i = 0; i < candidates_to_log; i++) {
@@ -747,7 +747,7 @@ int B48DisplayController::calculate_display_duration(const std::shared_ptr<Messa
 
   // Use a simple heuristic: longer messages display for longer, up to a max
   int calculated_duration = std::min(length_duration, 60);
-  ESP_LOGI(
+  ESP_LOGD(
       TAG,
       "Calculated display duration for message ID %d: base_duration=%d, length_duration=%d, calculated_duration=%d",
       msg->message_id, base_duration, length_duration, calculated_duration);

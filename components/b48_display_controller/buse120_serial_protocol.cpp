@@ -25,7 +25,7 @@ bool BUSE120SerialProtocol::send_command(const std::string &payload) {
     snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(c));
     debug_bytes += hex;
   }
-  ESP_LOGD(TAG, "Debug bytes: %s", debug_bytes.c_str());
+  ESP_LOGV(TAG, "Bytes: %s", debug_bytes.c_str());
 
   // Send payload
   this->uart_->write_array(reinterpret_cast<const uint8_t *>(payload.c_str()), payload.length());
@@ -110,14 +110,14 @@ bool BUSE120SerialProtocol::send_raw_payload(const std::string &raw_payload) {
 
   uint8_t checksum = calculate_checksum(raw_payload);
 
-  ESP_LOGD(TAG, "Sending raw payload: \"%s\"", raw_payload.c_str());
+  ESP_LOGV(TAG, "Sending raw payload: \"%s\"", raw_payload.c_str());
   std::string debug_bytes;
   for (char c : raw_payload) {
     char hex[4];
     snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(c));
     debug_bytes += hex;
   }
-  ESP_LOGD(TAG, "Raw payload debug bytes: %s", debug_bytes.c_str());
+  ESP_LOGV(TAG, "Raw payload bytes: %s", debug_bytes.c_str());
 
   // Send payload
   this->uart_->write_array(reinterpret_cast<const uint8_t *>(raw_payload.c_str()), raw_payload.length());
