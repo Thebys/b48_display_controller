@@ -138,6 +138,32 @@ class B48DisplayController : public Component {
   // Filesystem stats method for HA
   void display_filesystem_stats() { log_filesystem_stats(); }
 
+  // --- Raw BUSE Command and State Machine Control ---
+  /**
+   * @brief Sends a raw command string directly to the BUSE120 display.
+   * This bypasses usual message formatting and directly uses the serial protocol's
+   * raw send capability. The protocol handler will add CR and checksum.
+   * @param raw_payload The raw command string.
+   */
+  void send_raw_buse_command(const std::string &raw_payload);
+
+  /**
+   * @brief Pauses the main display state machine.
+   * Display updates will halt, but background tasks may continue.
+   */
+  void pause_state_machine();
+
+  /**
+   * @brief Resumes the main display state machine.
+   */
+  void resume_state_machine();
+
+  /**
+   * @brief Checks if the state machine is currently paused.
+   * @return true if paused, false otherwise.
+   */
+  bool is_state_machine_paused() const;
+
  protected:
   // Database methods
   bool init_database();
@@ -250,6 +276,9 @@ class B48DisplayController : public Component {
   std::atomic<bool> pending_message_cache_refresh_{false};
 
   bool first_cycle_in_state_{true};
+
+  // State machine pause flag
+  std::atomic<bool> state_machine_paused_{false};
 
   void log_filesystem_stats();
 };

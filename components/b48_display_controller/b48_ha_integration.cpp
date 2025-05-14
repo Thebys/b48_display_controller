@@ -52,6 +52,11 @@ void B48HAIntegration::register_services_() {
   // Register service for filesystem stats
   register_service(&B48HAIntegration::handle_display_filesystem_stats_service_, "display_filesystem_stats");
 
+  // Register services for raw command and state machine control
+  register_service(&B48HAIntegration::handle_send_raw_buse_command_service_, "send_raw_buse_command", {"payload"});
+  register_service(&B48HAIntegration::handle_pause_state_machine_service_, "pause_display_state_machine");
+  register_service(&B48HAIntegration::handle_resume_state_machine_service_, "resume_display_state_machine");
+
   ESP_LOGD(TAG, "Service registration complete.");
 }
 
@@ -189,6 +194,37 @@ void B48HAIntegration::handle_display_filesystem_stats_service_() {
     ESP_LOGI(TAG, "Filesystem stats displayed via HA service");
   } else {
     ESP_LOGE(TAG, "Cannot display filesystem stats - parent controller not available");
+  }
+}
+
+// --- Raw Command and State Machine Service Handler Implementations ---
+void B48HAIntegration::handle_send_raw_buse_command_service_(std::string payload) {
+  ESP_LOGI(TAG, "Service send_raw_buse_command called with payload: %s", payload.c_str());
+  if (parent_) {
+    // The controller itself will check if it's safe to send raw commands (e.g., if paused)
+    parent_->send_raw_buse_command(payload);
+  } else {
+    ESP_LOGE(TAG, "Cannot send raw BUSE command - parent controller not available.");
+  }
+}
+
+void B48HAIntegration::handle_pause_state_machine_service_() {
+  ESP_LOGI(TAG, "Service pause_display_state_machine called.");
+  if (parent_) {
+    parent_->pause_state_machine();
+    ESP_LOGI(TAG, "Display state machine paused via HA service.");
+  } else {
+    ESP_LOGE(TAG, "Cannot pause state machine - parent controller not available.");
+  }
+}
+
+void B48HAIntegration::handle_resume_state_machine_service_() {
+  ESP_LOGI(TAG, "Service resume_display_state_machine called.");
+  if (parent_) {
+    parent_->resume_state_machine();
+    ESP_LOGI(TAG, "Display state machine resumed via HA service.");
+  } else {
+    ESP_LOGE(TAG, "Cannot resume state machine - parent controller not available.");
   }
 }
 

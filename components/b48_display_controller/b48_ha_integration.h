@@ -59,6 +59,11 @@ class B48HAIntegration : public Component, public api::CustomAPIDevice {
   // Filesystem stats service handler
   void handle_display_filesystem_stats_service_();
 
+  // --- Raw Command and State Machine Service Handlers ---
+  void handle_send_raw_buse_command_service_(std::string payload);
+  void handle_pause_state_machine_service_();
+  void handle_resume_state_machine_service_();
+
   // --- Member Variables ---
   B48DisplayController *parent_; // Pointer to the main controller component
 

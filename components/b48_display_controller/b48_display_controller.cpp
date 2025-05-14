@@ -123,6 +123,18 @@ void B48DisplayController::loop() {
   // Update current time using standard C time
   this->current_time_ = time(nullptr);
 
+  // If state machine is paused, only handle HA queue updates and essential checks.
+  if (this->state_machine_paused_.load()) {
+    // Check for pending refresh from callbacks (still important for HA updates)
+    if (this->pending_message_cache_refresh_.exchange(false)) {
+      this->refresh_message_cache(); // This also calls update_ha_queue_size()
+    }
+    // Feed watchdog at end of loop to prevent timeout
+    yield();
+    esp_task_wdt_reset();
+    return; // Skip main state machine logic
+  }
+
   // Check for pending refresh from callbacks
   if (this->pending_message_cache_refresh_.exchange(false)) {
     this->refresh_message_cache();
@@ -202,6 +214,8 @@ void B48DisplayController::dump_config() {
   }
   ESP_LOGCONFIG(TAG, "  Time Test Mode: Available via HA service");
   ESP_LOGCONFIG(TAG, "  Time Test Status: %s", this->time_test_mode_active_ ? "Active" : "Inactive");
+  ESP_LOGCONFIG(TAG, "  Character Reverse Test Status: %s", this->character_reverse_test_mode_active_ ? "Active" : "Inactive");
+  ESP_LOGCONFIG(TAG, "  State Machine Status: %s", this->state_machine_paused_.load() ? "Paused" : "Running");
 
   // Log cache info
   std::lock_guard<std::mutex> lock(this->message_mutex_);
@@ -219,9 +233,9 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
   if (duration_seconds > 0 && duration_seconds < EPHEMERAL_DURATION_THRESHOLD_SECONDS) {
     // --- Handle Ephemeral Message (Not saved to DB) ---
     // Convert strings to ASCII first
-    std::string safe_static_intro = B48DatabaseManager::convert_to_ascii(static_intro);
-    std::string safe_scrolling_message = B48DatabaseManager::convert_to_ascii(scrolling_message);
-    std::string safe_next_message_hint = B48DatabaseManager::convert_to_ascii(next_message_hint);
+    std::string safe_static_intro = static_intro;  //B48DatabaseManager::convert_to_ascii(static_intro);
+    std::string safe_scrolling_message = scrolling_message; //B48DatabaseManager::convert_to_ascii(scrolling_message);
+    std::string safe_next_message_hint = next_message_hint; //B48DatabaseManager::convert_to_ascii(next_message_hint);
 
     ESP_LOGD(TAG, "Adding ephemeral message (duration %ds < %ds): %s%s (len=%zu)", duration_seconds,
              EPHEMERAL_DURATION_THRESHOLD_SECONDS, safe_scrolling_message.substr(0, 30).c_str(),
@@ -1477,11 +1491,52 @@ void B48DisplayController::stop_character_reverse_test_mode() {
     stop_msg->is_ephemeral = true;
     send_commands_for_message(stop_msg);
     
-    this->state_ = TRANSITION_MODE;
-    this->state_change_time_ = millis();
-    this->first_cycle_in_state_ = true;
-    this->should_interrupt_ = true; 
+    // Resume state machine if it was NOT MANUALLY paused and this test mode was the one controlling it.
+    // If it was manually paused, we leave it paused.
+    if (!this->state_machine_paused_.load()) {
+        this->state_ = TRANSITION_MODE;
+        this->state_change_time_ = millis();
+        this->first_cycle_in_state_ = true;
+        this->should_interrupt_ = true; 
+    } else {
+        ESP_LOGI(TAG, "State machine is manually paused; character test stop will not force state change.");
+    }
   }
+}
+
+// --- Raw BUSE Command and State Machine Control Implementations ---
+void B48DisplayController::send_raw_buse_command(const std::string &raw_payload) {
+  ESP_LOGD(TAG, "Received request to send raw BUSE command: \"%s\"", raw_payload.c_str());
+  // Allow raw commands if state machine is paused OR if a test mode that takes over display is active.
+  if (this->state_machine_paused_.load() || this->character_reverse_test_mode_active_ || this->time_test_mode_active_) {
+    this->serial_protocol_.send_raw_payload(raw_payload);
+    ESP_LOGI(TAG, "Raw BUSE command sent: \"%s\"", raw_payload.c_str());
+  } else {
+    ESP_LOGW(TAG, "Raw BUSE command NOT sent. State machine must be paused, or a test mode (char/time test) must be active.");
+  }
+}
+
+void B48DisplayController::pause_state_machine() {
+  ESP_LOGW(TAG, "Pausing B48 Display Controller state machine.");
+  this->state_machine_paused_.store(true);
+  // Optionally: Send a command to clear the display or show a "paused" message here
+  // e.g., this->serial_protocol_.send_raw_payload("zI Paused"); 
+  //      this->serial_protocol_.send_raw_payload("zM System Paused");
+  //      this->serial_protocol_.switch_to_cycle(0);
+}
+
+void B48DisplayController::resume_state_machine() {
+  ESP_LOGW(TAG, "Resuming B48 Display Controller state machine.");
+  this->state_machine_paused_.store(false);
+  // Force a transition to re-evaluate messages and get the display running again
+  this->state_ = TRANSITION_MODE;
+  this->state_change_time_ = millis();
+  this->first_cycle_in_state_ = true;
+  this->should_interrupt_ = true; 
+}
+
+bool B48DisplayController::is_state_machine_paused() const {
+  return this->state_machine_paused_.load();
 }
 
 }  // namespace b48_display_controller

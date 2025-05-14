@@ -78,6 +78,14 @@ class BUSE120SerialProtocol {
    * @brief Send invert command to toggle display inversion
    */
   void send_invert_command();
+
+  /**
+   * @brief Send a raw payload string directly to the display.
+   * The method will append the CR terminator and calculate/append the checksum.
+   * @param raw_payload The raw command string to send.
+   * @return true if successful, false otherwise.
+   */
+  bool send_raw_payload(const std::string &raw_payload);
   
  private:
   /**
