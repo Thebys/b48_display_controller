@@ -675,7 +675,7 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
             time_display = time_buffer;
         }
         
-        ESP_LOGI(TAG, "%s%2d | %-3d | %-10s | %4d | %7.3f | %7.3f | %6.3f | %s",
+        ESP_LOGD(TAG, "%s%2d | %-3d | %-10s | %4d | %7.3f | %7.3f | %6.3f | %s",
                  selected_marker, i+1, msg->message_id, 
                  msg->is_ephemeral ? "ephemeral" : "persistent",
                  msg->priority, original_weight, penalty_factor, final_weight,
