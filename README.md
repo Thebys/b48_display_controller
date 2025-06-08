@@ -22,7 +22,7 @@ An ESPHome component that breathes new life into vintage BUSE120 LED displays by
 - **💾 Persistent Storage**: SQLite database on ESP32 filesystem (LittleFS)
 - **⚙️ Configurable Display**: Priority, duration, line positioning, and more
 - **📡 Remote Control**: Web interface(work in progress) and HA/ESPHome API(working) for message management
-- **🔧 BUSE120 Protocol**: Native support for original display communication
+- **🔧 IBIS Protocol**: Native support for original display communication (work in progress)
 
 ## 🛠️ Hardware Requirements
 
