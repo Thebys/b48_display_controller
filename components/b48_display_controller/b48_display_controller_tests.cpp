@@ -1,4 +1,5 @@
 #include "b48_display_controller.h"
+#include "buse120_serial_protocol.h"
 #include "esphome/core/log.h"
 #include <stdexcept>       // Include for std::exception
 #include <functional>      // Include for std::function if needed, but pointer works
@@ -93,6 +94,13 @@ void B48DisplayController::runSelfTests() {
 
   // Add the new Czech character preservation test
   if (executeTest(&B48DisplayController::test_czech_character_preservation, "test_czech_character_preservation")) {
+    pass_count++;
+  } else {
+    fail_count++;
+  }
+
+  // Add the new Czech character encoding test
+  if (executeTest(&B48DisplayController::test_czech_character_encoding, "test_czech_character_encoding")) {
     pass_count++;
   } else {
     fail_count++;
@@ -361,6 +369,64 @@ bool B48DisplayController::test_czech_character_preservation() {
   bool test_passed = czech_preserved && german_converted;
   ESP_LOGI(TAG, "Czech character preservation test: %s", test_passed ? "PASSED" : "FAILED");
 
+  return test_passed;
+}
+
+bool B48DisplayController::test_czech_character_encoding() {
+  ESP_LOGI(TAG, "Testing Czech character encoding for display...");
+  
+  // Test string with Czech characters
+  std::string czech_input = "Příští zastávka: Náměstí";  // Contains á, í, ř, š, ť, ě
+  std::string expected_display_encoding = "P\x0e\x29\x0e\x21\x0e\x28\x0e\x86\x0e\x21 zastavka: N\x0e\x20m\x0e\x88st\x0e\x21";
+  
+  // Test the serial protocol encoding function
+  std::string encoded_result = BUSE120SerialProtocol::encode_czech_characters(czech_input);
+  
+  ESP_LOGI(TAG, "Czech encoding test:");
+  ESP_LOGI(TAG, "  Input:    '%s' (len=%zu)", czech_input.c_str(), czech_input.length());
+  ESP_LOGI(TAG, "  Encoded:  '%s' (len=%zu)", encoded_result.c_str(), encoded_result.length());
+  
+  // Log the encoded bytes in hex for verification
+  std::string hex_output;
+  for (unsigned char c : encoded_result) {
+    char hex[4];
+    snprintf(hex, sizeof(hex), "%02X ", c);
+    hex_output += hex;
+  }
+  ESP_LOGI(TAG, "  Hex:      %s", hex_output.c_str());
+  
+  // Test individual character mappings
+  bool mappings_correct = true;
+  
+  // Test á (should become \x0e\x20)
+  std::string test_a = "á";
+  std::string encoded_a = BUSE120SerialProtocol::encode_czech_characters(test_a);
+  if (encoded_a != "\x0e\x20") {
+    ESP_LOGE(TAG, "FAIL: 'á' encoding incorrect. Expected \\x0e\\x20, got len=%zu", encoded_a.length());
+    mappings_correct = false;
+  }
+  
+  // Test š (should become \x0e\x28)
+  std::string test_s = "š";
+  std::string encoded_s = BUSE120SerialProtocol::encode_czech_characters(test_s);
+  if (encoded_s != "\x0e\x28") {
+    ESP_LOGE(TAG, "FAIL: 'š' encoding incorrect. Expected \\x0e\\x28, got len=%zu", encoded_s.length());
+    mappings_correct = false;
+  }
+  
+  // Test mixed text (Czech + ASCII)
+  std::string mixed_text = "Bus 25 šel přes řeku";
+  std::string encoded_mixed = BUSE120SerialProtocol::encode_czech_characters(mixed_text);
+  ESP_LOGI(TAG, "Mixed text test:");
+  ESP_LOGI(TAG, "  Input:   '%s'", mixed_text.c_str());
+  ESP_LOGI(TAG, "  Encoded: '%s'", encoded_mixed.c_str());
+  
+  // Verify ASCII characters are preserved
+  bool ascii_preserved = (encoded_mixed.find("Bus 25") == 0);  // Should start with "Bus 25"
+  
+  bool test_passed = mappings_correct && ascii_preserved;
+  ESP_LOGI(TAG, "Czech character encoding test: %s", test_passed ? "PASSED" : "FAILED");
+  
   return test_passed;
 }
 

@@ -86,6 +86,13 @@ class BUSE120SerialProtocol {
    * @return true if successful, false otherwise.
    */
   bool send_raw_payload(const std::string &raw_payload);
+
+  /**
+   * @brief Convert Czech UTF-8 characters to display encoding (\x0e prefix format)
+   * @param text The text to encode
+   * @return The encoded text with Czech characters converted to display format
+   */
+  static std::string encode_czech_characters(const std::string &text);
   
  private:
   /**
