@@ -232,21 +232,21 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
   // Determine if the message is ephemeral or persistent based on duration
   if (duration_seconds > 0 && duration_seconds < EPHEMERAL_DURATION_THRESHOLD_SECONDS) {
     // --- Handle Ephemeral Message (Not saved to DB) ---
-    // Convert strings to ASCII first
-    std::string safe_static_intro = B48DatabaseManager::convert_to_ascii(static_intro);
-    std::string safe_scrolling_message = B48DatabaseManager::convert_to_ascii(scrolling_message);
-    std::string safe_next_message_hint = B48DatabaseManager::convert_to_ascii(next_message_hint);
+    // Sanitize strings for Czech display (preserves Czech characters)
+    std::string safe_static_intro = B48DatabaseManager::sanitize_for_czech_display(static_intro);
+    std::string safe_scrolling_message = B48DatabaseManager::sanitize_for_czech_display(scrolling_message);
+    std::string safe_next_message_hint = B48DatabaseManager::sanitize_for_czech_display(next_message_hint);
 
     ESP_LOGD(TAG, "Adding ephemeral message (duration %ds < %ds): %s%s (len=%zu)", duration_seconds,
              EPHEMERAL_DURATION_THRESHOLD_SECONDS, safe_scrolling_message.substr(0, 30).c_str(),
              safe_scrolling_message.length() > 30 ? "..." : "", safe_scrolling_message.length());
 
-    // Log original vs converted if there were changes for scrolling_message
+    // Log original vs sanitized if there were changes for scrolling_message
     if (safe_scrolling_message != scrolling_message) {
-        ESP_LOGW(TAG, "Original ephemeral message contained non-ASCII chars, converted: '%s%s' -> '%s%s'",
+        ESP_LOGW(TAG, "Original ephemeral message contained non-Czech characters, sanitized: '%s%s' -> '%s%s'",
                  scrolling_message.substr(0, 30).c_str(), scrolling_message.length() > 30 ? "..." : "",
                  safe_scrolling_message.substr(0, 30).c_str(), safe_scrolling_message.length() > 30 ? "..." : "");
-        ESP_LOGW(TAG, "Ephemeral message lengths: original=%zu, converted=%zu", scrolling_message.length(),
+        ESP_LOGW(TAG, "Ephemeral message lengths: original=%zu, sanitized=%zu", scrolling_message.length(),
                  safe_scrolling_message.length());
     }
 

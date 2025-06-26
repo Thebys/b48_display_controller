@@ -207,6 +207,7 @@ class B48DisplayController : public Component {
   bool testLittleFSMount();
   bool testSqliteBasicOperations();
   bool testSerialProtocol();
+  bool test_czech_character_preservation();
   bool executeTest(bool (B48DisplayController::*testMethod)(), const char* testName);
 
   // Add new test declarations above here

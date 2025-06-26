@@ -215,17 +215,18 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
   esp_task_wdt_reset();  // Reset watchdog timer
 
   // Convert all strings to ASCII
-  std::string safe_static_intro = convert_to_ascii(static_intro);
-  std::string safe_scrolling_message = convert_to_ascii(scrolling_message);
-  std::string safe_next_message_hint = convert_to_ascii(next_message_hint);
-  std::string safe_source_info = convert_to_ascii(source_info);
+  // Sanitize strings for Czech display (preserves Czech characters)
+  std::string safe_static_intro = sanitize_for_czech_display(static_intro);
+  std::string safe_scrolling_message = sanitize_for_czech_display(scrolling_message);
+  std::string safe_next_message_hint = sanitize_for_czech_display(next_message_hint);
+  std::string safe_source_info = sanitize_for_czech_display(source_info);
 
-  // Log original vs converted if there were changes
+  // Log original vs sanitized if there were changes
   if (safe_scrolling_message != scrolling_message) {
-    ESP_LOGW(TAG, "Original message contained non-ASCII chars, converted: '%s%s' -> '%s%s'",
+    ESP_LOGW(TAG, "Original message contained non-Czech characters, sanitized: '%s%s' -> '%s%s'",
              scrolling_message.substr(0, 30).c_str(), scrolling_message.length() > 30 ? "..." : "",
              safe_scrolling_message.substr(0, 30).c_str(), safe_scrolling_message.length() > 30 ? "..." : "");
-    ESP_LOGW(TAG, "Message lengths: original=%zu, converted=%zu", scrolling_message.length(),
+    ESP_LOGW(TAG, "Message lengths: original=%zu, sanitized=%zu", scrolling_message.length(),
              safe_scrolling_message.length());
   }
 
@@ -1255,6 +1256,159 @@ std::string B48DatabaseManager::convert_to_ascii(const std::string &str) {
         i = str.length() - 1;  // Adjust if we skipped too far
       }
     } else {  // Invalid UTF-8 start byte or other non-ASCII character not handled above
+      result += ' ';
+    }
+  }
+  return result;
+}
+
+std::string B48DatabaseManager::sanitize_for_czech_display(const std::string &str) {
+  std::string result;
+  result.reserve(str.length());  // Pre-allocate memory
+
+  for (size_t i = 0; i < str.length(); ++i) {
+    unsigned char c1 = static_cast<unsigned char>(str[i]);
+
+    if (c1 <= 0x7F) {  // Standard ASCII (0-127) - keep as is
+      result += c1;
+    } else if (c1 >= 0xC2 && c1 <= 0xDF) {  // Start of a 2-byte UTF-8 sequence
+      if (i + 1 < str.length()) {
+        unsigned char c2 = static_cast<unsigned char>(str[i + 1]);
+        if ((c2 & 0xC0) == 0x80) {             // Check if c2 is a valid continuation byte (10xxxxxx)
+          uint16_t utf8_val = (c1 << 8) | c2;  // Combine bytes for switch case
+          bool is_czech_char = false;
+          
+          // Check if this is a Czech character that should be preserved
+          switch (utf8_val) {
+            // Czech & Slovak characters - PRESERVE these
+            case 0xC381:  // Á
+            case 0xC3A1:  // á
+            case 0xC48C:  // Č
+            case 0xC48D:  // č
+            case 0xC48E:  // Ď
+            case 0xC48F:  // ď
+            case 0xC389:  // É
+            case 0xC3A9:  // é
+            case 0xC49A:  // Ě
+            case 0xC49B:  // ě
+            case 0xC38D:  // Í
+            case 0xC3AD:  // í
+            case 0xC587:  // Ň
+            case 0xC588:  // ň
+            case 0xC393:  // Ó
+            case 0xC3B3:  // ó
+            case 0xC598:  // Ř
+            case 0xC599:  // ř
+            case 0xC5A0:  // Š
+            case 0xC5A1:  // š
+            case 0xC5A4:  // Ť
+            case 0xC5A5:  // ť
+            case 0xC39A:  // Ú
+            case 0xC3BA:  // ú
+            case 0xC5AE:  // Ů
+            case 0xC5AF:  // ů
+            case 0xC39D:  // Ý
+            case 0xC3BD:  // ý
+            case 0xC5BD:  // Ž
+            case 0xC5BE:  // ž
+              is_czech_char = true;
+              break;
+            default:
+              break;
+          }
+          
+          if (is_czech_char) {
+            // Preserve Czech characters by keeping their UTF-8 encoding
+            result += c1;
+            result += c2;
+          } else {
+            // For non-Czech characters, convert to ASCII equivalent or space
+            char replacement = ' ';  // Default replacement
+            
+            switch (utf8_val) {
+              // German
+              case 0xC384: replacement = 'A'; break;  // Ä
+              case 0xC3A4: replacement = 'a'; break;  // ä
+              case 0xC396: replacement = 'O'; break;  // Ö
+              case 0xC3B6: replacement = 'o'; break;  // ö
+              case 0xC39C: replacement = 'U'; break;  // Ü
+              case 0xC3BC: replacement = 'u'; break;  // ü
+              case 0xC39F: replacement = 's'; break;  // ß
+              
+              // French (common ones)
+              case 0xC380: replacement = 'A'; break;  // À
+              case 0xC3A0: replacement = 'a'; break;  // à
+              case 0xC382: replacement = 'A'; break;  // Â
+              case 0xC3A2: replacement = 'a'; break;  // â
+              case 0xC387: replacement = 'C'; break;  // Ç
+              case 0xC3A7: replacement = 'c'; break;  // ç
+              case 0xC388: replacement = 'E'; break;  // È
+              case 0xC3A8: replacement = 'e'; break;  // è
+              case 0xC38A: replacement = 'E'; break;  // Ê
+              case 0xC3AA: replacement = 'e'; break;  // ê
+              case 0xC38B: replacement = 'E'; break;  // Ë
+              case 0xC3AB: replacement = 'e'; break;  // ë
+              case 0xC38E: replacement = 'I'; break;  // Î
+              case 0xC3AE: replacement = 'i'; break;  // î
+              case 0xC394: replacement = 'O'; break;  // Ô
+              case 0xC3B4: replacement = 'o'; break;  // ô
+              case 0xC399: replacement = 'U'; break;  // Ù
+              case 0xC3B9: replacement = 'u'; break;  // ù
+              case 0xC39B: replacement = 'U'; break;  // Û
+              case 0xC3BB: replacement = 'u'; break;  // û
+              
+              // Spanish
+              case 0xC391: replacement = 'N'; break;  // Ñ
+              case 0xC3B1: replacement = 'n'; break;  // ñ
+              
+              // Polish (common ones)
+              case 0xC484: replacement = 'A'; break;  // Ą
+              case 0xC485: replacement = 'a'; break;  // ą
+              case 0xC486: replacement = 'C'; break;  // Ć
+              case 0xC487: replacement = 'c'; break;  // ć
+              case 0xC498: replacement = 'E'; break;  // Ę
+              case 0xC499: replacement = 'e'; break;  // ę
+              case 0xC581: replacement = 'L'; break;  // Ł
+              case 0xC582: replacement = 'l'; break;  // ł
+              case 0xC583: replacement = 'N'; break;  // Ń
+              case 0xC584: replacement = 'n'; break;  // ń
+              case 0xC59A: replacement = 'S'; break;  // Ś
+              case 0xC59B: replacement = 's'; break;  // ś
+              case 0xC5B9: replacement = 'Z'; break;  // Ź
+              case 0xC5BA: replacement = 'z'; break;  // ź
+              case 0xC5BB: replacement = 'Z'; break;  // Ż
+              case 0xC5BC: replacement = 'z'; break;  // ż
+              
+              default:
+                replacement = ' ';  // Unknown character, replace with space
+                break;
+            }
+            result += replacement;
+          }
+          i++;  // Increment i because we've consumed c2
+        } else {
+          // Invalid UTF-8 sequence (c2 is not a continuation byte)
+          result += ' ';
+        }
+      } else {
+        // String ends prematurely after c1 indicated a 2-byte sequence
+        result += ' ';
+      }
+    } else if ((c1 >= 0xE0 && c1 <= 0xEF) || (c1 >= 0xF0 && c1 <= 0xF4)) {
+      // Start of a 3-byte or 4-byte UTF-8 sequence.
+      // For simplicity, map these to space and advance index.
+      result += ' ';
+      if (c1 >= 0xE0 && c1 <= 0xEF) {  // 3-byte
+        i += 2;  // Skip the next two bytes
+      } else {   // 4-byte
+        i += 3;  // Skip the next three bytes
+      }
+      // Ensure we don't skip past the end of the string
+      if (i >= str.length()) {
+        i = str.length() - 1;
+      }
+    } else {
+      // Invalid UTF-8 start byte or other non-ASCII character not handled above
       result += ' ';
     }
   }

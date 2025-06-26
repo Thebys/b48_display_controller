@@ -75,8 +75,11 @@ class B48DatabaseManager {
   // Bootstrapping
   bool bootstrap_default_messages();
 
-  // Convert non-ASCII characters to their ASCII equivalents
+  // Convert non-ASCII characters to their ASCII equivalents (use only when ASCII is required)
   static std::string convert_to_ascii(const std::string &str);
+
+  // Preserve Czech characters, convert only problematic non-Czech characters (preferred for message display)
+  static std::string sanitize_for_czech_display(const std::string &str);
 
  private:
   // Helper for schema creation/migration
