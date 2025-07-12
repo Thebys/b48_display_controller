@@ -5,6 +5,7 @@
 #include <memory>
 #include <ctime>  // For time_t in MessageEntry
 #include <sqlite3.h>
+#include "character_mappings.h"
 // Remove the circular dependency
 // #include "b48_display_controller.h" // For MessageEntry struct
 
@@ -80,6 +81,9 @@ class B48DatabaseManager {
 
   // Preserve Czech characters, convert only problematic non-Czech characters (preferred for message display)
   static std::string sanitize_for_czech_display(const std::string &str);
+
+  // Minimal sanitization for database storage - only converts problematic Unicode to ASCII
+  static std::string sanitize_for_database_storage(const std::string &str);
 
  private:
   // Helper for schema creation/migration

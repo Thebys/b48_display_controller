@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/components/uart/uart.h"
+#include "character_mappings.h"
 #include <string>
 #include <cstdint>
 #include <memory>
@@ -93,6 +94,14 @@ class BUSE120SerialProtocol {
    * @return The encoded text with Czech characters converted to display format
    */
   static std::string encode_czech_characters(const std::string &text);
+
+  /**
+   * @brief Safely truncate string without breaking multi-byte sequences
+   * @param text The text to truncate
+   * @param max_bytes Maximum number of bytes to keep
+   * @return Safely truncated string
+   */
+  static std::string safe_truncate(const std::string &text, size_t max_bytes);
   
  private:
   /**

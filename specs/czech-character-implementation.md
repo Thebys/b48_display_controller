@@ -33,33 +33,7 @@ This document describes the implementation of Czech character support in the B48
 
 ## Character Mapping
 
-Based on `mb_char_map.md`, Czech characters are encoded as:
-
-| Character | UTF-8 Hex  | Display Code |
-|-----------|------------|--------------|
-| á         | C3 A1      | 0E 20        |
-| í         | C3 AD      | 0E 21        |
-| ó         | C3 B3      | 0E 22        |
-| ú         | C3 BA      | 0E 23        |
-| ň         | C5 88      | 0E 24        |
-| Ů         | C5 AE      | 0E 26        |
-| ů         | C5 AF      | 0E 27        |
-| š         | C5 A1      | 0E 28        |
-| ř         | C5 99      | 0E 29        |
-| Č         | C4 8C      | 0E 80        |
-| é         | C3 A9      | 0E 82        |
-| ď         | C4 8F      | 0E 83        |
-| Ď         | C4 8E      | 0E 85        |
-| Ť         | C5 A4      | 0E 86        |
-| č         | C4 8D      | 0E 87        |
-| ě         | C4 9B      | 0E 88        |
-| Ě         | C4 9A      | 0E 89        |
-| É         | C3 89      | 0E 90        |
-| ž         | C5 BE      | 0E 91        |
-| Ž         | C5 BD      | 0E 92        |
-| Ó         | C3 93      | 0E 95        |
-| Ú         | C3 9A      | 0E 97        |
-| ý         | C3 BD      | 0E 98        |
+Based on `mb_char_map.md`.
 
 ## Code Flow
 
