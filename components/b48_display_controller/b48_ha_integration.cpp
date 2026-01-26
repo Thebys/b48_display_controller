@@ -62,8 +62,8 @@ void B48HAIntegration::register_services_() {
 
 // --- Service Handlers ---
 
-void B48HAIntegration::handle_delete_message_service_(int message_id) {
-  ESP_LOGD(TAG, "Service b48_delete_message called: message_id=%d", message_id);
+void B48HAIntegration::handle_delete_message_service_(int32_t message_id) {
+  ESP_LOGD(TAG, "Service b48_delete_message called: message_id=%d", (int)message_id);
   if (message_id <= 0) {
     ESP_LOGW(TAG, "Delete message failed: Invalid message_id (%d).", message_id);
     return;

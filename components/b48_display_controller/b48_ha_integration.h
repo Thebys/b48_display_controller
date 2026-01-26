@@ -37,7 +37,7 @@ class B48HAIntegration : public Component, public api::CustomAPIDevice {
   void register_services_();
 
   // --- Service Handler Methods ---
-  void handle_delete_message_service_(int message_id);
+  void handle_delete_message_service_(int32_t message_id);
 
   void handle_wipe_database_service_();
 
