@@ -72,6 +72,8 @@ void B48DisplayController::setup() {
   if (this->ha_integration_) {
     ESP_LOGI(TAG, "Registering HA integration component...");
     App.register_component(this->ha_integration_.get());  // Register HA integration component
+    // Explicitly call setup() since we're registering late (after ESPHome's setup phase)
+    this->ha_integration_->setup();
   } else {
     ESP_LOGW(TAG, "HA integration component not initialized!");
   }
