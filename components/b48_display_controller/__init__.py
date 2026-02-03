@@ -4,6 +4,7 @@ from esphome.const import CONF_ID, CONF_UART_ID, CONF_PIN
 from esphome.components import uart, sensor, text_sensor
 from esphome.components.sensor import Sensor
 from esphome.components.text_sensor import TextSensor
+from esphome.core import CORE
 
 # Declare dependencies
 DEPENDENCIES = ["uart", "sensor"]
@@ -71,8 +72,39 @@ async def to_code(config):
         sens = await cg.get_variable(config[CONF_MESSAGE_QUEUE_SIZE_SENSOR])
         cg.add(var.set_message_queue_size_sensor(sens))
 
-    cg.add_library(
-        name="Sqlite3Esp32",
-        repository="https://github.com/siara-cc/esp32_arduino_sqlite3_lib.git",
-        version="2.5.0",
-    )
+    # SQLite library for ESP32
+    # Using esp32-idf-sqlite3 for ESP-IDF framework which has proper fsync handling
+    # For Arduino framework, we use esp32_arduino_sqlite3_lib
+    if CORE.using_arduino:
+        # Arduino framework - use PlatformIO library
+        cg.add_library(
+            name="Sqlite3Esp32",
+            repository="https://github.com/siara-cc/esp32_arduino_sqlite3_lib.git",
+            version="2.5.0",
+        )
+        cg.add_library(
+            name="esp_littlefs",
+            repository="https://github.com/joltwallet/esp_littlefs.git",
+            version="1.20.4",
+        )
+    else:
+        # ESP-IDF framework - use local IDF component with ESP-IDF 5.x fix
+        from esphome.components.esp32 import add_idf_component
+        import os
+
+        # Use local sqlite3 component with spi_flash fix for ESP-IDF 5.x
+        # The upstream esp32-idf-sqlite3 CMakeLists.txt is missing spi_flash in PRIV_REQUIRES,
+        # causing 'spi_flash_mmap.h: No such file' errors on ESP-IDF 5.x
+        script_dir = os.path.dirname(__file__)
+        sqlite_path = os.path.join(script_dir, "esp32-idf-sqlite3")
+        add_idf_component(
+            name="esp32-idf-sqlite3",
+            path=sqlite_path,
+        )
+
+        # LittleFS component
+        add_idf_component(
+            name="joltwallet/esp_littlefs",
+            repo="https://github.com/joltwallet/esp_littlefs.git",
+            ref="v1.20.4",
+        )

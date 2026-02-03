@@ -4,20 +4,65 @@
 #include <sqlite3.h>
 #include <utility>         // For std::move
 #include <ctime>           // Required for time(nullptr) in add_persistent_message call if used there.
-#include <Arduino.h>       // For delay() and yield()
+#include <cstring>         // For memcmp
+#include <unistd.h>        // For fsync(), close()
+#include <fcntl.h>         // For open(), O_RDONLY
 #include <esp_task_wdt.h>  // For esp_task_wdt_reset()
+#include "esphome/core/hal.h"  // For delay() and yield()
 
 namespace esphome {
 namespace b48_display_controller {
 
 static const char *const TAG = "b48c.db";  // Tag for database manager
 
+// Helper function to force filesystem sync for a specific file
+// Uses multiple methods to maximize chance of data reaching flash
+// Note: esp32_arduino_sqlite3_lib VFS ignores fsync() return values,
+// so we call this explicitly after important database operations
+static bool sync_file_to_flash(const char *path) {
+  bool success = false;
+
+  // Method 1: Open file and call fsync on file descriptor
+  int fd = open(path, O_RDONLY);
+  if (fd >= 0) {
+    int rc = fsync(fd);
+    close(fd);
+    if (rc == 0) {
+      ESP_LOGD(TAG, "fsync() succeeded for %s", path);
+      success = true;
+    } else {
+      // errno=88 (ENOTSOCK) is a known LittleFS VFS bug - data may still be written
+      ESP_LOGW(TAG, "fsync() returned errno=%d for %s (may be LittleFS VFS quirk)", errno, path);
+    }
+  } else {
+    ESP_LOGW(TAG, "Failed to open %s for sync, errno=%d", path, errno);
+  }
+
+  // Method 2: Use fopen/fflush/fclose as additional sync attempt
+  FILE *f = fopen(path, "r");
+  if (f) {
+    fflush(f);  // Flush any buffered data
+    fclose(f);
+    success = true;  // File was accessible
+  }
+
+  // Give the filesystem time to complete the write operation
+  delay(10);
+  yield();
+
+  return success;
+}
+
 B48DatabaseManager::B48DatabaseManager(const std::string &db_path) : database_path_(db_path) {}
 
 B48DatabaseManager::~B48DatabaseManager() {
   if (this->db_) {
     ESP_LOGD(TAG, "Closing database connection.");
+    // Flush cache before closing to ensure all data is written
+    sqlite3_db_cacheflush(this->db_);
     sqlite3_close(this->db_);
+    // Force filesystem sync to ensure data reaches flash
+    sync_file_to_flash(this->database_path_.c_str());
     this->db_ = nullptr;
   }
 
@@ -41,10 +86,71 @@ bool B48DatabaseManager::initialize() {
   yield();
   esp_task_wdt_reset();
 
-  ESP_LOGD(TAG, "Opening database connection");
-  int rc = sqlite3_open(this->database_path_.c_str(), &this->db_);
+  // Check if file exists and validate SQLite magic header
+  bool file_exists = false;
+  bool valid_sqlite_header = false;
+  FILE *check_file = fopen(this->database_path_.c_str(), "rb");
+  if (check_file) {
+    file_exists = true;
+    // Read the first 16 bytes to check for SQLite magic header
+    char header[16] = {0};  // Initialize to zero to avoid garbage on partial read
+    size_t bytes_read = fread(header, 1, 16, check_file);
+    fseek(check_file, 0, SEEK_END);
+    size_t file_size = ftell(check_file);
+    fclose(check_file);
+    check_file = nullptr;
+
+    ESP_LOGI(TAG, "Database file exists: size=%zu bytes, read %zu header bytes", file_size, bytes_read);
+
+    // SQLite magic header is "SQLite format 3\0" (16 bytes)
+    const char *sqlite_magic = "SQLite format 3";
+    if (bytes_read >= 16 && memcmp(header, sqlite_magic, 15) == 0) {
+      valid_sqlite_header = true;
+      ESP_LOGI(TAG, "Valid SQLite magic header detected!");
+    } else {
+      ESP_LOGW(TAG, "File does NOT have valid SQLite magic header!");
+      ESP_LOGW(TAG, "Header bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
+               (unsigned char)header[0], (unsigned char)header[1],
+               (unsigned char)header[2], (unsigned char)header[3],
+               (unsigned char)header[4], (unsigned char)header[5],
+               (unsigned char)header[6], (unsigned char)header[7]);
+
+      // If file is corrupt (empty or invalid header), try to remove it
+      if (file_size < 512) {
+        ESP_LOGW(TAG, "Removing corrupt database file (%zu bytes) before opening", file_size);
+        if (unlink(this->database_path_.c_str()) == 0) {
+          ESP_LOGI(TAG, "Successfully removed corrupt file");
+          file_exists = false;  // Treat as fresh start
+        } else {
+          ESP_LOGE(TAG, "Failed to remove corrupt file, errno=%d - caller should format LittleFS", errno);
+          return false;  // Signal failure so caller can format LittleFS
+        }
+      }
+    }
+  } else {
+    ESP_LOGI(TAG, "Database file does not exist, will be created");
+  }
+
+  // Use sqlite3_open_v2 with explicit flags for better control
+  int open_flags;
+  if (file_exists && valid_sqlite_header) {
+    // File exists and is valid SQLite - open in read-write mode only (no create)
+    open_flags = SQLITE_OPEN_READWRITE;
+    ESP_LOGI(TAG, "Opening existing SQLite database (READWRITE mode)");
+  } else {
+    // File doesn't exist or is invalid - create new database
+    open_flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+    if (file_exists && !valid_sqlite_header) {
+      ESP_LOGW(TAG, "Existing file is NOT a valid SQLite database - will be overwritten!");
+    }
+    ESP_LOGI(TAG, "Opening database with CREATE flag");
+  }
+
+  ESP_LOGD(TAG, "Opening database connection with flags=0x%x", open_flags);
+  int rc = sqlite3_open_v2(this->database_path_.c_str(), &this->db_, open_flags, nullptr);
   if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "Failed to open database at '%s': %s", this->database_path_.c_str(), sqlite3_errmsg(this->db_));
+    ESP_LOGE(TAG, "Failed to open database at '%s': %s (rc=%d)",
+             this->database_path_.c_str(), sqlite3_errmsg(this->db_), rc);
     sqlite3_close(this->db_);  // Close even if open failed partially
     this->db_ = nullptr;
     return false;
@@ -67,6 +173,51 @@ bool B48DatabaseManager::initialize() {
     ESP_LOGD(TAG, "Successfully executed PRAGMA page_size=512.");
   }
   // --- End Set Page Size ---
+
+  // --- Set Journal Mode and Synchronous for LittleFS ---
+  // LittleFS properly supports file operations that SQLite needs, unlike SPIFFS.
+  // Using DELETE mode provides crash recovery while avoiding WAL complexity on embedded systems.
+  const char *pragma_journal = "PRAGMA journal_mode=DELETE;";
+  rc = sqlite3_exec(this->db_, pragma_journal, nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    ESP_LOGW(TAG, "Failed to set journal_mode=DELETE: %s", err_msg);
+    sqlite3_free(err_msg);
+  } else {
+    ESP_LOGD(TAG, "Successfully set journal_mode=DELETE (LittleFS compatible with crash recovery).");
+  }
+
+  // LittleFS supports fsync properly, EXTRA is even more aggressive than FULL
+  // EXTRA syncs the directory after each transaction in addition to the database file
+  // This is critical for ensuring data persists across power cycles on embedded systems
+  const char *pragma_sync = "PRAGMA synchronous=EXTRA;";
+  rc = sqlite3_exec(this->db_, pragma_sync, nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    ESP_LOGW(TAG, "Failed to set synchronous=EXTRA: %s", err_msg);
+    sqlite3_free(err_msg);
+  } else {
+    ESP_LOGD(TAG, "Successfully set synchronous=EXTRA.");
+  }
+
+  // Use exclusive locking since we have only one connection on embedded systems
+  const char *pragma_locking = "PRAGMA locking_mode=EXCLUSIVE;";
+  rc = sqlite3_exec(this->db_, pragma_locking, nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    ESP_LOGW(TAG, "Failed to set locking_mode=EXCLUSIVE: %s", err_msg);
+    sqlite3_free(err_msg);
+  } else {
+    ESP_LOGD(TAG, "Successfully set locking_mode=EXCLUSIVE.");
+  }
+
+  // Set temp_store to MEMORY to reduce flash writes for temporary tables
+  const char *pragma_temp = "PRAGMA temp_store=MEMORY;";
+  rc = sqlite3_exec(this->db_, pragma_temp, nullptr, nullptr, &err_msg);
+  if (rc != SQLITE_OK) {
+    ESP_LOGW(TAG, "Failed to set temp_store=MEMORY: %s", err_msg);
+    sqlite3_free(err_msg);
+  } else {
+    ESP_LOGD(TAG, "Successfully set temp_store=MEMORY.");
+  }
+  // --- End Journal/Sync Settings ---
 
   // Reset watchdog after setting page size
   yield();
@@ -127,35 +278,47 @@ bool B48DatabaseManager::check_and_create_schema() {
   ESP_LOGD(TAG, "Checking and creating database schema if needed.");
   esp_task_wdt_reset();  // Reset watchdog timer at start
 
-  // Get the database version
-  int user_version = 0;
   char *err_msg = nullptr;
-  const char *query = "PRAGMA user_version;";
+  int rc;
 
-  auto callback = [](void *data, int argc, char **argv, char **azColName) -> int {
-    int *version = static_cast<int *>(data);
-    if (argc > 0 && argv[0]) {
-      *version = std::stoi(argv[0]);
-    }
-    return 0;
-  };
-
-  int rc = sqlite3_exec(this->db_, query, callback, &user_version, &err_msg);
+  // First, create the schema_info table if it doesn't exist
+  // We use a regular table instead of PRAGMA user_version because
+  // PRAGMA user_version doesn't persist reliably on ESP32 with LittleFS
+  rc = sqlite3_exec(this->db_,
+      "CREATE TABLE IF NOT EXISTS schema_info (key TEXT PRIMARY KEY, value INTEGER);",
+      nullptr, nullptr, &err_msg);
   if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "SQL error: %s", err_msg);
+    ESP_LOGE(TAG, "Failed to create schema_info table: %s", err_msg);
     sqlite3_free(err_msg);
     return false;
   }
 
-  ESP_LOGI(TAG, "Database schema version: %d", user_version);
-  esp_task_wdt_reset();  // Reset watchdog timer after version check
+  yield();
+  esp_task_wdt_reset();
 
-  // Create tables if they don't exist or update schema
-  if (user_version < 2) {
-    yield();               // Yield before potentially long operation
-    esp_task_wdt_reset();  // Reset watchdog timer
+  // Get the schema version from the table
+  int schema_version = 0;
+  sqlite3_stmt *stmt = nullptr;
+  rc = sqlite3_prepare_v2(this->db_,
+      "SELECT value FROM schema_info WHERE key = 'schema_version';",
+      -1, &stmt, nullptr);
+  if (rc == SQLITE_OK) {
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+      schema_version = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+  } else {
+    ESP_LOGW(TAG, "Failed to prepare schema version query: %s", sqlite3_errmsg(this->db_));
+  }
 
-    // Initial schema creation
+  ESP_LOGI(TAG, "Database schema version: %d", schema_version);
+  esp_task_wdt_reset();
+
+  // Create tables if schema version is 0 (new database)
+  if (schema_version < 1) {
+    yield();
+    esp_task_wdt_reset();
+
     const char *create_tables = R"SQL(
       CREATE TABLE IF NOT EXISTS messages (
         message_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,40 +333,63 @@ bool B48DatabaseManager::check_and_create_schema() {
         duration_seconds INTEGER DEFAULT NULL,
         source_info TEXT DEFAULT NULL
       );
-      
+
       CREATE INDEX IF NOT EXISTS idx_messages_priority ON messages (is_enabled, priority, message_id);
       CREATE INDEX IF NOT EXISTS idx_messages_expiry ON messages (is_enabled, duration_seconds, datetime_added);
-      
-      PRAGMA user_version = 1;
     )SQL";
 
-    // Ensure db handle is valid before executing further commands
     if (!this->db_) {
       ESP_LOGE(TAG, "Database handle is null before creating tables.");
-      return false;  // Should not happen if open check is correct, but safer
+      return false;
     }
 
-    // Execute schema creation with yields
     ESP_LOGD(TAG, "Creating database schema...");
     yield();
-    esp_task_wdt_reset();  // Reset watchdog timer before SQL exec
+    esp_task_wdt_reset();
 
     rc = sqlite3_exec(this->db_, create_tables, nullptr, nullptr, &err_msg);
     yield();
-    esp_task_wdt_reset();  // Reset watchdog timer after SQL exec
+    esp_task_wdt_reset();
 
     if (rc != SQLITE_OK) {
-      ESP_LOGE(TAG, "SQL error: %s", err_msg);
+      ESP_LOGE(TAG, "SQL error creating schema: %s", err_msg);
       sqlite3_free(err_msg);
       return false;
     }
 
     ESP_LOGI(TAG, "Database schema created successfully");
+
+    // Set schema version to 1 in the schema_info table
+    // This is a regular INSERT which SQLite persists reliably
+    ESP_LOGD(TAG, "Setting schema version to 1 in schema_info table...");
+    rc = sqlite3_exec(this->db_,
+        "INSERT OR REPLACE INTO schema_info (key, value) VALUES ('schema_version', 1);",
+        nullptr, nullptr, &err_msg);
+    if (rc != SQLITE_OK) {
+      ESP_LOGE(TAG, "Failed to set schema version: %s", err_msg);
+      sqlite3_free(err_msg);
+      return false;
+    }
+
+    yield();
+    esp_task_wdt_reset();
+
+    // Flush SQLite cache to ensure data is written
+    // NOTE: VACUUM was removed because it causes "out of memory" on ESP32
+    // We rely on sqlite3_db_cacheflush() and synchronous=FULL pragma instead
+    ESP_LOGD(TAG, "Flushing SQLite cache...");
+    sqlite3_db_cacheflush(this->db_);
+
+    // Give filesystem time to complete writes
+    delay(50);
+    yield();
+    esp_task_wdt_reset();
+
+    ESP_LOGI(TAG, "Schema created and persisted to disk");
   }
 
-  // Implement schema upgrades as needed for future versions
-  yield();               // Final yield
-  esp_task_wdt_reset();  // Final watchdog reset
+  yield();
+  esp_task_wdt_reset();
 
   return true;
 }
@@ -449,7 +635,11 @@ std::vector<std::shared_ptr<MessageEntry>> B48DatabaseManager::get_active_persis
   }
   ESP_LOGI(TAG, "Now_ts (epoch): %lld", (long long) now_ts);
   sqlite3_bind_int64(stmt, 1, now_ts);
-  ESP_LOGI(TAG, "Expanded SQL: %s", sqlite3_expanded_sql(stmt));
+  char *expanded_sql = sqlite3_expanded_sql(stmt);
+  if (expanded_sql) {
+    ESP_LOGI(TAG, "Expanded SQL: %s", expanded_sql);
+    sqlite3_free(expanded_sql);
+  }
 
   int count = 0;
   ESP_LOGD(TAG, "Starting to fetch messages from database");
@@ -683,24 +873,12 @@ int B48DatabaseManager::purge_disabled_messages() {
   int actually_deleted = sqlite3_changes(this->db_);
   ESP_LOGI(TAG, "Successfully purged %d disabled messages from database", actually_deleted);
 
-  // Vacuum the database to reclaim space (optional but recommended for infrequent cleanup)
-  ESP_LOGI(TAG, "Performing VACUUM operation to reclaim space...");
+  // Flush cache to ensure deletions are written
+  // NOTE: VACUUM was removed because it causes "out of memory" on ESP32
+  sqlite3_db_cacheflush(this->db_);
 
-  yield();               // Yield before vacuum
-  esp_task_wdt_reset();  // Reset watchdog timer
-
-  rc = sqlite3_exec(this->db_, "VACUUM;", nullptr, nullptr, &err_msg);
-
-  yield();               // Yield after vacuum
-  esp_task_wdt_reset();  // Reset watchdog timer
-
-  if (rc != SQLITE_OK) {
-    ESP_LOGW(TAG, "VACUUM operation failed: %s", err_msg);
-    sqlite3_free(err_msg);
-    // Continue anyway, this is not critical
-  } else {
-    ESP_LOGI(TAG, "VACUUM operation completed successfully");
-  }
+  yield();
+  esp_task_wdt_reset();
 
   return actually_deleted;
 }
@@ -799,6 +977,18 @@ bool B48DatabaseManager::bootstrap_default_messages() {
     ESP_LOGE(TAG, "Failed to add one or more default messages during bootstrap.");
     return false;
   }
+
+  // Flush SQLite cache to ensure data is written to filesystem
+  // NOTE: VACUUM was removed because it causes "out of memory" on ESP32
+  // We rely on sqlite3_db_cacheflush() and synchronous=FULL pragma instead
+  ESP_LOGD(TAG, "Flushing SQLite cache after bootstrap...");
+  sqlite3_db_cacheflush(this->db_);
+
+  yield();
+  esp_task_wdt_reset();
+
+  // Give filesystem time to complete writes
+  delay(50);
 
   ESP_LOGI(TAG, "Successfully bootstrapped default messages.");
   return true;

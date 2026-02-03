@@ -12,15 +12,39 @@
 #include <mutex>
 
 #include <sqlite3.h>
-#include <Arduino.h>       // For delay() and yield()
 #include <esp_task_wdt.h>  // For esp_task_wdt_reset()
-#include <LittleFS.h>
 #include <esp_partition.h>  // For esp_partition_find and esp_partition_get
+#include <esp_littlefs.h>  // For native ESP-IDF LittleFS functions (SQLite compatible)
+#include <driver/gpio.h>   // For ESP-IDF GPIO functions
+#include <esp_heap_caps.h> // For heap_caps_get_free_size()
 
 namespace esphome {
 namespace b48_display_controller {
 
 static const char *const TAG = "b48c.main";
+
+// Helper function to check if file exists using fopen
+// This works with ESP-IDF VFS paths like "/littlefs/messages.db"
+static bool file_exists_vfs(const char *path) {
+  FILE *f = fopen(path, "r");
+  if (f) {
+    fclose(f);
+    return true;
+  }
+  return false;
+}
+
+// Helper function to get file size using fopen/fseek
+static size_t get_file_size_vfs(const char *path) {
+  FILE *f = fopen(path, "r");
+  if (f) {
+    fseek(f, 0, SEEK_END);
+    size_t size = ftell(f);
+    fclose(f);
+    return size;
+  }
+  return 0;
+}
 static const char CR = 0x0D;  // Carriage Return for BUSE120 protocol
 
 // Destructor
@@ -60,8 +84,8 @@ void B48DisplayController::setup() {
   // Specifically once proper connector is used, this will be removed
   if (this->display_enable_pin_ >= 0) {
     ESP_LOGCONFIG(TAG, "  Configuring display enable pin: %d", this->display_enable_pin_);
-    pinMode(this->display_enable_pin_, OUTPUT);
-    digitalWrite(this->display_enable_pin_, HIGH);
+    gpio_set_direction(static_cast<gpio_num_t>(this->display_enable_pin_), GPIO_MODE_OUTPUT);
+    gpio_set_level(static_cast<gpio_num_t>(this->display_enable_pin_), 1);
     ESP_LOGCONFIG(TAG, "  Display enable pin pulled HIGH");
   }
 
@@ -990,22 +1014,23 @@ void B48DisplayController::dump_database_for_diagnostics() {
 // Helper methods for setup to improve readability and avoid gotos
 
 void B48DisplayController::log_filesystem_stats() {
-  // check if LittleFS is available
-  if (!LittleFS.begin(false)) {
-    ESP_LOGE(TAG, "LittleFS is not available");
-    return;
-  }
   ESP_LOGI(TAG, "========= FILESYSTEM STATS =========");
 
   // Log ESP32 heap information first
-  ESP_LOGI(TAG, "ESP32 Memory - Free heap: %u bytes, Minimum free heap: %u bytes", ESP.getFreeHeap(),
-           ESP.getMinFreeHeap());
+  ESP_LOGI(TAG, "ESP32 Memory - Free heap: %zu bytes, Minimum free heap: %zu bytes",
+           heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
+           heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
 
-  // Get and log detailed storage information
-  size_t total_bytes = LittleFS.totalBytes();
-  size_t used_bytes = LittleFS.usedBytes();
+  // Get LittleFS info using ESP-IDF native function
+  size_t total_bytes = 0, used_bytes = 0;
+  esp_err_t ret = esp_littlefs_info("littlefs", &total_bytes, &used_bytes);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to get LittleFS info (%s)", esp_err_to_name(ret));
+    return;
+  }
+
   size_t free_bytes = total_bytes - used_bytes;
-  float used_percent = (used_bytes * 100.0f) / total_bytes;
+  float used_percent = (total_bytes > 0) ? (used_bytes * 100.0f) / total_bytes : 0.0f;
 
   ESP_LOGI(TAG, "LittleFS storage:");
   ESP_LOGI(TAG, "  Total space: %zu bytes (%.1f KB)", total_bytes, total_bytes / 1024.0f);
@@ -1013,76 +1038,169 @@ void B48DisplayController::log_filesystem_stats() {
   ESP_LOGI(TAG, "  Free space:  %zu bytes (%.1f KB)", free_bytes, free_bytes / 1024.0f);
   ESP_LOGI(TAG, "  Usage:       %.1f%%", used_percent);
 
-  // List files in the root directory to see what's taking up space
-  ESP_LOGI(TAG, "Files in LittleFS root:");
-  File root = LittleFS.open("/");
-  if (root && root.isDirectory()) {
-    File file = root.openNextFile();
-    int file_count = 0;
-    size_t total_listed_size = 0;
-    while (file) {  // Remove the limit to show all files
-      size_t file_size = file.size();
-      total_listed_size += file_size;
-      ESP_LOGI(TAG, "  %s: %zu bytes (%.1f KB)", file.name(), file_size, file_size / 1024.0f);
-      file = root.openNextFile();
-      file_count++;
-    }
-    ESP_LOGI(TAG, "Total: %d files using %zu bytes (%.1f KB)", file_count, total_listed_size,
-             total_listed_size / 1024.0f);
+  // Check if database file exists and report its size
+  const char *db_path = this->database_path_.c_str();
+  if (file_exists_vfs(db_path)) {
+    size_t db_size = get_file_size_vfs(db_path);
+    ESP_LOGI(TAG, "Database file: %s - %zu bytes (%.1f KB)", db_path, db_size, db_size / 1024.0f);
+  } else {
+    ESP_LOGI(TAG, "Database file not found at: %s", db_path);
   }
-  root.close();
 }
 
 bool B48DisplayController::initialize_filesystem() {
-  ESP_LOGI(TAG, "Initializing LittleFS...");
+  ESP_LOGI(TAG, "Initializing LittleFS (SQLite-compatible filesystem)...");
 
-  // Find the partition labeled "spiffs" or similar in the partition table
-  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+  // Find the partition labeled "littlefs" in the partition table
+  // Note: Subtype remains SPIFFS (ESP-IDF requirement), but we mount with LittleFS
+  // which supports the file operations SQLite needs (proper fseek for PRIMARY KEY/AUTOINCREMENT)
+  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "littlefs");
   if (it == NULL) {
-    ESP_LOGE(TAG, "Failed to find SPIFFS partition!");
+    ESP_LOGE(TAG, "Failed to find storage partition!");
     return false;
   }
 
-  const esp_partition_t *spiffs_partition = esp_partition_get(it);
+  const esp_partition_t *storage_partition = esp_partition_get(it);
   esp_partition_iterator_release(it);
 
-  ESP_LOGI(TAG, "Found SPIFFS partition: label='%s', size=%u bytes (%.1f KB)", spiffs_partition->label,
-           spiffs_partition->size, spiffs_partition->size / 1024.0f);
+  ESP_LOGI(TAG, "Found storage partition: label='%s', size=%u bytes (%.1f KB)", storage_partition->label,
+           storage_partition->size, storage_partition->size / 1024.0f);
 
-  // Try to mount without formatting first
-  if (!LittleFS.begin(false)) {
-    ESP_LOGW(TAG, "Initial LittleFS mount failed. Trying format=true...");
-    if (!LittleFS.begin(true)) {
-      ESP_LOGE(TAG, "Failed to mount LittleFS even after formatting. Running without database.");
+  // Configure ESP-IDF native LittleFS
+  // IMPORTANT: format_if_mount_failed = false to prevent auto-wiping on corruption
+  // This preserves database data across power cycles and corruption recovery attempts
+  esp_vfs_littlefs_conf_t conf = {
+    .base_path = "/littlefs",
+    .partition_label = storage_partition->label,
+    .format_if_mount_failed = false,
+    .dont_mount = false,
+  };
+
+  // Mount using ESP-IDF native function
+  esp_err_t ret = esp_vfs_littlefs_register(&conf);
+  if (ret != ESP_OK) {
+    if (ret == ESP_ERR_INVALID_STATE || ret == ESP_FAIL) {
+      // Filesystem corruption or empty/erased partition - attempt recovery by formatting
+      ESP_LOGW(TAG, "LittleFS mount failed (%s), attempting format for recovery...", esp_err_to_name(ret));
+
+      // Format the partition
+      ret = esp_littlefs_format(storage_partition->label);
+      if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to format LittleFS: %s", esp_err_to_name(ret));
+        return false;
+      }
+
+      // Try mounting again after format
+      ret = esp_vfs_littlefs_register(&conf);
+      if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mount LittleFS after format: %s", esp_err_to_name(ret));
+        return false;
+      }
+      ESP_LOGW(TAG, "LittleFS formatted and mounted - database will be recreated");
+    } else if (ret == ESP_ERR_NOT_FOUND) {
+      ESP_LOGE(TAG, "Failed to find LittleFS partition");
+      return false;
+    } else {
+      ESP_LOGE(TAG, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
       return false;
     }
-    ESP_LOGI(TAG, "LittleFS mounted successfully after formatting.");
+  }
+
+  ESP_LOGI(TAG, "LittleFS mounted successfully!");
+
+  // Get filesystem info using ESP-IDF native functions
+  size_t total_bytes = 0, used_bytes = 0;
+  ret = esp_littlefs_info(storage_partition->label, &total_bytes, &used_bytes);
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to get LittleFS info (%s)", esp_err_to_name(ret));
   } else {
-    ESP_LOGI(TAG, "LittleFS mounted successfully without formatting.");
+    size_t free_bytes = total_bytes - used_bytes;
+    ESP_LOGI(TAG, "LittleFS info: Total=%zu bytes (%.1f KB), Used=%zu bytes, Free=%zu bytes (%.1f KB)",
+             total_bytes, total_bytes / 1024.0f, used_bytes, free_bytes, free_bytes / 1024.0f);
+
+    // If this is a dedicated partition for SQLite, inform about expectations
+    ESP_LOGI(TAG, "SQLite typically needs 30-50KB of free contiguous space");
+
+    // Only check if we have minimum required space
+    if (free_bytes < 16384) {
+      ESP_LOGE(TAG, "Not enough free space for database (need at least 16KB). Consider increasing partition size.");
+      return false;
+    }
   }
 
-  // Get basic info needed for checks
-  size_t total_bytes = LittleFS.totalBytes();
-  size_t free_bytes = total_bytes - LittleFS.usedBytes();
-
-  ESP_LOGI(TAG, "  Partition:   %u bytes (%.1f KB)", spiffs_partition->size, spiffs_partition->size / 1024.0f);
-
-  // If total_bytes is significantly smaller than partition size, something is wrong
-  if (total_bytes < spiffs_partition->size * 0.8) {
-    ESP_LOGW(TAG, "LittleFS is only seeing %zu bytes when partition is %u bytes!", total_bytes, spiffs_partition->size);
-    ESP_LOGW(TAG, "This may indicate a configuration issue. Will continue with available space.");
+  // Test basic file operations to verify VFS is working
+  ESP_LOGI(TAG, "Testing basic file I/O with VFS...");
+  const char *test_path = "/littlefs/vfs_test.tmp";
+  FILE *f = fopen(test_path, "w");
+  if (f == NULL) {
+    ESP_LOGE(TAG, "Failed to open test file for writing! errno=%d", errno);
+    return false;
   }
+  const char *test_data = "VFS Test OK";
+  size_t written = fwrite(test_data, 1, strlen(test_data), f);
+  fclose(f);
 
-  // If this is a dedicated partition for SQLite, inform about expectations
-  ESP_LOGI(TAG, "SQLite typically needs 30-50KB of free contiguous space");
-
-  // Only check if we have minimum required space - lower threshold to work with available space
-  if (free_bytes < 16384) {  // Changed from 32768 (32KB) to 16384 (16KB)
-    ESP_LOGE(TAG, "Not enough free space for database (need at least 16KB). Consider increasing partition size.");
+  if (written != strlen(test_data)) {
+    ESP_LOGE(TAG, "Failed to write test data! Written=%zu, Expected=%zu", written, strlen(test_data));
     return false;
   }
 
-  // Log filesystem stats again after mounting to show what's really available
+  // Read back
+  f = fopen(test_path, "r");
+  if (f == NULL) {
+    ESP_LOGE(TAG, "Failed to open test file for reading! errno=%d", errno);
+    return false;
+  }
+  char read_buf[32] = {0};
+  size_t read_bytes = fread(read_buf, 1, sizeof(read_buf) - 1, f);
+  fclose(f);
+
+  // Clean up test file
+  unlink(test_path);
+
+  if (read_bytes != strlen(test_data) || strcmp(read_buf, test_data) != 0) {
+    ESP_LOGE(TAG, "VFS test failed! Read='%s', Expected='%s'", read_buf, test_data);
+    return false;
+  }
+
+  ESP_LOGI(TAG, "VFS file I/O test PASSED!");
+
+  // ============ BOOT COUNTER PERSISTENCE TEST ============
+  // This tests if basic file I/O survives reboots
+  const char *counter_path = "/littlefs/boot_counter.txt";
+  int boot_count = 0;
+
+  // Try to read existing counter
+  FILE *cf = fopen(counter_path, "r");
+  if (cf != NULL) {
+    char buf[16] = {0};
+    if (fgets(buf, sizeof(buf), cf) != NULL) {
+      boot_count = atoi(buf);
+    }
+    fclose(cf);
+  }
+
+  // Increment counter
+  boot_count++;
+
+  // Write new counter value
+  cf = fopen(counter_path, "w");
+  if (cf != NULL) {
+    fprintf(cf, "%d", boot_count);
+    fflush(cf);
+    fsync(fileno(cf));
+    fclose(cf);
+
+    ESP_LOGW(TAG, "========================================");
+    ESP_LOGW(TAG, "  BOOT COUNTER: %d", boot_count);
+    ESP_LOGW(TAG, "  (If this is always 1, persistence is broken)");
+    ESP_LOGW(TAG, "========================================");
+  } else {
+    ESP_LOGE(TAG, "Failed to write boot counter!");
+  }
+  // ========================================================
+
+  // Log filesystem stats again after mounting
   log_filesystem_stats();
 
   return true;
@@ -1101,70 +1219,95 @@ bool B48DisplayController::check_database_prerequisites() {
 bool B48DisplayController::initialize_database() {
   ESP_LOGI(TAG, "Creating database manager with path: '%s'", this->database_path_.c_str());
 
-  // Check if the database file already exists and log its size
-  if (LittleFS.exists(this->database_path_.c_str())) {
-    File db_file = LittleFS.open(this->database_path_.c_str(), "r");
-    if (db_file) {
-      size_t file_size = db_file.size();
-      db_file.close();
-      ESP_LOGI(TAG, "Existing database file size: %zu bytes (%.1f KB)", file_size, file_size / 1024.0f);
-
-      // Only delete if the file is suspiciously small (likely corrupt)
-      if (file_size < 512) {
-        ESP_LOGW(TAG, "Database file exists but is very small, might be corrupt. Removing...");
-        if (LittleFS.remove(this->database_path_.c_str())) {
-          ESP_LOGI(TAG, "Removed potentially corrupt database file");
-        } else {
-          ESP_LOGE(TAG, "Failed to remove potentially corrupt database file");
-        }
-      }
-    }
-  } else {
-    ESP_LOGI(TAG, "No existing database file found, will create new");
-  }
-
-  // Create the database manager
-  db_manager_.reset(new B48DatabaseManager(this->database_path_));
-
   // Try to initialize the database with retries
   for (int retry = 0; retry < 3; retry++) {
+    // FIRST: Destroy any existing db_manager to release file handles
+    if (db_manager_) {
+      ESP_LOGD(TAG, "Releasing previous database manager before retry");
+      db_manager_.reset(nullptr);
+      delay(100);  // Allow file handles to release
+    }
+
+    // SECOND: Check for and remove corrupt files BEFORE creating db_manager
+    if (file_exists_vfs(this->database_path_.c_str())) {
+      size_t file_size = get_file_size_vfs(this->database_path_.c_str());
+      ESP_LOGI(TAG, "Existing database file found! Size: %zu bytes (%.1f KB)", file_size, file_size / 1024.0f);
+
+      // Remove corrupt/empty files proactively (especially on retry)
+      if (file_size < 512) {
+        ESP_LOGW(TAG, "Database file is very small (%zu bytes), likely corrupt - removing", file_size);
+
+        // Try unlink() first (consistent with VFS test)
+        if (unlink(this->database_path_.c_str()) == 0) {
+          ESP_LOGI(TAG, "Successfully removed corrupt database file");
+        } else {
+          ESP_LOGE(TAG, "Failed to remove corrupt file with unlink(), errno=%d", errno);
+
+          // If unlink fails, the LittleFS has corrupt metadata - format the partition
+          ESP_LOGW(TAG, "LittleFS has corrupt file entry - formatting partition to recover");
+
+          // Unmount first
+          esp_vfs_littlefs_unregister("littlefs");
+
+          // Format the partition
+          esp_err_t fmt_ret = esp_littlefs_format("littlefs");
+          if (fmt_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to format LittleFS: %s", esp_err_to_name(fmt_ret));
+            return false;
+          }
+          ESP_LOGI(TAG, "LittleFS formatted successfully");
+
+          // Remount LittleFS
+          esp_vfs_littlefs_conf_t conf = {
+            .base_path = "/littlefs",
+            .partition_label = "littlefs",
+            .format_if_mount_failed = false,
+            .dont_mount = false,
+          };
+          esp_err_t mount_ret = esp_vfs_littlefs_register(&conf);
+          if (mount_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to remount LittleFS after format: %s", esp_err_to_name(mount_ret));
+            return false;
+          }
+          ESP_LOGI(TAG, "LittleFS remounted after format");
+
+          // Allow filesystem to settle after format+remount
+          delay(200);
+          yield();
+          esp_task_wdt_reset();
+        }
+      }
+    } else {
+      ESP_LOGI(TAG, "No existing database file found at '%s', will create new", this->database_path_.c_str());
+    }
+
     if (retry > 0) {
       ESP_LOGW(TAG, "Retrying database initialization (attempt %d of 3)...", retry + 1);
 
-      // Log memory status before retry
-      size_t total_bytes = LittleFS.totalBytes();
-      size_t used_bytes = LittleFS.usedBytes();
-      size_t free_bytes = total_bytes - used_bytes;
-      ESP_LOGI(TAG, "Before retry: %.1f KB free in LittleFS, %u bytes free in heap", free_bytes / 1024.0f,
-               ESP.getFreeHeap());
-
-      // If second retry fails, try to delete the file before final attempt
-      if (retry == 2) {
-        ESP_LOGW(TAG, "Final retry attempt - trying to remove database file first...");
-        if (LittleFS.exists(this->database_path_.c_str())) {
-          if (LittleFS.remove(this->database_path_.c_str())) {
-            ESP_LOGI(TAG, "Successfully removed existing database file for fresh start");
-          } else {
-            ESP_LOGE(TAG, "Failed to remove database file");
-          }
-        }
+      // Log memory status before retry using ESP-IDF native function
+      size_t total_bytes = 0, used_bytes = 0;
+      if (esp_littlefs_info("littlefs", &total_bytes, &used_bytes) == ESP_OK) {
+        size_t free_bytes = total_bytes - used_bytes;
+        ESP_LOGI(TAG, "Before retry: %.1f KB free in LittleFS, %zu bytes free in heap", free_bytes / 1024.0f,
+                 heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+      } else {
+        ESP_LOGI(TAG, "Before retry: LittleFS info unavailable, %zu bytes free in heap", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
       }
 
-      delay(1000);  // Wait a second before retrying
+      delay(500);  // Wait before retrying
     }
+
+    // THIRD: Create fresh db_manager for this attempt
+    db_manager_.reset(new B48DatabaseManager(this->database_path_));
 
     // Attempt initialization
     bool success = this->db_manager_->initialize();
 
     if (success) {
       // Log final database file size on success
-      if (LittleFS.exists(this->database_path_.c_str())) {
-        File db_file = LittleFS.open(this->database_path_.c_str(), "r");
-        if (db_file) {
-          size_t file_size = db_file.size();
-          db_file.close();
-          ESP_LOGI(TAG, "Successfully created database file: %zu bytes (%.1f KB)", file_size, file_size / 1024.0f);
-        }
+      if (file_exists_vfs(this->database_path_.c_str())) {
+        size_t file_size = get_file_size_vfs(this->database_path_.c_str());
+        ESP_LOGI(TAG, "Database file after init: %zu bytes (%.1f KB)", file_size, file_size / 1024.0f);
       }
 
       ESP_LOGI(TAG, "Database initialized successfully!");
@@ -1244,9 +1387,6 @@ bool B48DisplayController::purge_disabled_messages() {
     log_filesystem_stats();
   }
 
-  // Update the last purge time regardless of whether messages were found
-  this->last_purge_time_ = time(nullptr);
-
   return true;
 }
 
@@ -1273,6 +1413,9 @@ void B48DisplayController::check_purge_interval() {
   if (hours_elapsed >= this->purge_interval_hours_) {
     ESP_LOGI(TAG, "Purge interval of %d hours elapsed (%.2f hours since last purge), starting automatic purge",
              this->purge_interval_hours_, hours_elapsed);
+
+    // Update last_purge_time_ BEFORE calling purge to prevent retry loop on failure
+    this->last_purge_time_ = time(nullptr);
 
     this->purge_disabled_messages();
   }

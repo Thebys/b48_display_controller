@@ -1,1 +1,21 @@
+# ESPHome build artifacts
 .esphome/*
+
+# Local configuration files (may contain credentials)
+local_*.yaml
+secrets.yaml
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

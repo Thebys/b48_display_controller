@@ -76,6 +76,12 @@ class B48DatabaseManager {
   // Bootstrapping
   bool bootstrap_default_messages();
 
+  // Force sync database to flash storage
+  // Call this after critical operations to ensure data persists
+  // Note: esp32_arduino_sqlite3_lib VFS ignores fsync return values,
+  // so we need to call this explicitly after important writes
+  void force_sync();
+
   // Convert non-ASCII characters to their ASCII equivalents (use only when ASCII is required)
   static std::string convert_to_ascii(const std::string &str);
 

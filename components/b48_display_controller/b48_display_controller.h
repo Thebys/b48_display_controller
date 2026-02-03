@@ -13,8 +13,6 @@
 #include <atomic>
 
 #include <sqlite3.h>
-#include <Arduino.h>
-#include <LittleFS.h>
 
 #include "b48_database_manager.h"
 #include "buse120_serial_protocol.h"
@@ -204,14 +202,25 @@ class B48DisplayController : public Component {
 
   // Self-test methods
   void runSelfTests();
-  bool testLittleFSMount();
+  bool testFilesystemMount();
   bool testSqliteBasicOperations();
   bool testSerialProtocol();
   bool test_czech_character_preservation();
   bool test_czech_character_encoding();
   bool executeTest(bool (B48DisplayController::*testMethod)(), const char* testName);
 
-  // Add new test declarations above here
+  // Persistence test
+  bool testDatabasePersistence();
+
+  // Legacy diagnostic tests (stubs for compatibility)
+  bool testFilesystemPersistence();
+  bool testSqliteSchemaPersistence();
+  bool testDatabaseMagicHeader();
+  bool testFilesystemTypeDetection();
+  bool testSqliteJournalMode();
+  bool testSyncAndFlush();
+  bool testDatabaseMessagesStats();
+  bool testLittleFSPersistenceAcrossReopen();
 
  private:  // Helper for test execution
   // Member variables

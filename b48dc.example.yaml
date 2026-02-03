@@ -1,22 +1,18 @@
 esphome:
   name: espington
   platformio_options:
-    lib_deps:
-      - FS @ ^2.0.0
-      - LittleFS @ ^2.0.0
-      - siara-cc/Sqlite3Esp32@^2.5
-    build_flags: 
+    build_flags:
       - -fexceptions
-      - -std=c++11
+      - -std=c++17
       - -DESP_PLATFORM
     build_unflags: -fno-exceptions
-    board_build.filesystem: littlefs
     # PUT THE CSV FILE FROM THE REPO NEXT TO THE ESPHome device YAML config FILE AND IT SHOULD WORK.
     board_build.partitions: "/config/esphome/b48_partitions.csv"
 esp32:
   board: esp32dev
   framework:
-    type: arduino
+    type: esp-idf
+    version: recommended
 
 wifi:
   ssid:  !secret wifi_ssid
