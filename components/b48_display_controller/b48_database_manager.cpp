@@ -458,11 +458,11 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
 
   // Get current time (timestamp) and log it for debugging
   time_t now = time(nullptr);
-  ESP_LOGI(TAG, "Current timestamp: %lld", (long long) now);
+  ESP_LOGD(TAG, "Current timestamp: %lld", (long long) now);
   sqlite3_bind_int64(stmt, 8, now);
 
   if (duration_seconds > 0) {
-    ESP_LOGI(TAG, "Message will expire at timestamp: %lld", (long long) (now + duration_seconds));
+    ESP_LOGD(TAG, "Message will expire at timestamp: %lld", (long long) (now + duration_seconds));
     sqlite3_bind_int(stmt, 9, duration_seconds);
   } else {
     sqlite3_bind_null(stmt, 9);
@@ -474,15 +474,18 @@ bool B48DatabaseManager::add_persistent_message(int priority, int line_number, i
     sqlite3_bind_null(stmt, 10);
   }
 
-  yield();               // Allow watchdog to reset after binding params
+  yield();               // Allow watchdog to reset before step
   esp_task_wdt_reset();  // Reset watchdog timer
 
+  ESP_LOGD(TAG, "Executing INSERT statement...");
   rc = sqlite3_step(stmt);
+  ESP_LOGD(TAG, "INSERT completed with rc=%d", rc);
 
   yield();               // Allow watchdog to reset after step
   esp_task_wdt_reset();  // Reset watchdog timer
 
   sqlite3_finalize(stmt);
+  ESP_LOGD(TAG, "Statement finalized");
 
   if (rc != SQLITE_DONE) {
     ESP_LOGE(TAG, "Failed to add message: %s", sqlite3_errmsg(this->db_));

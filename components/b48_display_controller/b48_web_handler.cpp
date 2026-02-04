@@ -397,16 +397,13 @@ void B48WebHandler::handle_api_messages_create(AsyncWebServerRequest *request) {
     return;
   }
 
-  // Add message via controller
-  std::lock_guard<std::mutex> lock(this->controller_->get_message_mutex());
-  bool success = this->controller_->add_message(priority, line_number, tarif_zone, static_intro, scrolling_message,
-                                                next_message_hint, duration_seconds, "WebUI", false);
+  // Schedule message creation in main loop (avoids httpd stack overflow)
+  ESP_LOGD(TAG, "Scheduling add_message for main loop...");
+  this->controller_->schedule_add_message(priority, line_number, tarif_zone, static_intro, scrolling_message,
+                                          next_message_hint, duration_seconds);
 
-  if (success) {
-    this->send_json_success(request, "Message created");
-  } else {
-    this->send_json_error(request, 500, "Failed to create message");
-  }
+  // Return success immediately - actual work happens in main loop
+  this->send_json_success(request, "Message scheduled for creation");
 }
 
 void B48WebHandler::handle_api_messages_update(AsyncWebServerRequest *request, int message_id) {
@@ -415,39 +412,15 @@ void B48WebHandler::handle_api_messages_update(AsyncWebServerRequest *request, i
     return;
   }
 
-  std::lock_guard<std::mutex> lock(this->controller_->get_message_mutex());
-  auto *db = this->controller_->get_database_manager();
-  if (db == nullptr) {
-    this->send_json_error(request, 500, "Database not initialized");
-    return;
-  }
-
-  // Get current message to preserve unchanged fields
-  auto messages = db->get_active_persistent_messages();
-  std::shared_ptr<MessageEntry> current_msg = nullptr;
-  for (const auto &msg : messages) {
-    if (msg->message_id == message_id) {
-      current_msg = msg;
-      break;
-    }
-  }
-
-  if (current_msg == nullptr) {
-    this->send_json_error(request, 404, "Message not found");
-    return;
-  }
-
-  // Start with current values, override with form data if provided
-  int priority = current_msg->priority;
-  bool is_enabled = true;
-  int line_number = current_msg->line_number;
-  int tarif_zone = current_msg->tarif_zone;
+  // Parse form data - form always sends all fields
+  int priority = 50;
+  int line_number = 0;
+  int tarif_zone = 0;
   int duration_seconds = 0;
-  std::string static_intro = current_msg->static_intro;
-  std::string scrolling_message = current_msg->scrolling_message;
-  std::string next_message_hint = current_msg->next_message_hint;
+  std::string static_intro;
+  std::string scrolling_message;
+  std::string next_message_hint;
 
-  // Parse URL-encoded form data - override if provided
   if (request->hasParam("priority")) {
     priority = atoi(request->arg("priority").c_str());
   }
@@ -470,19 +443,13 @@ void B48WebHandler::handle_api_messages_update(AsyncWebServerRequest *request, i
     next_message_hint = request->arg("next_message_hint");
   }
 
-  ESP_LOGD(TAG, "Update message %d: priority=%d, line=%d, msg='%s'", message_id, priority, line_number,
-           scrolling_message.c_str());
+  ESP_LOGD(TAG, "Scheduling update for message %d: priority=%d, line=%d", message_id, priority, line_number);
 
-  // Use controller method which triggers cache refresh
-  bool success = this->controller_->update_message(message_id, priority, is_enabled, line_number, tarif_zone,
-                                                   static_intro, scrolling_message, next_message_hint, duration_seconds,
-                                                   "WebUI");
+  // Schedule update in main loop (avoids httpd stack overflow)
+  this->controller_->schedule_update_message(message_id, priority, line_number, tarif_zone, static_intro,
+                                             scrolling_message, next_message_hint, duration_seconds);
 
-  if (success) {
-    this->send_json_success(request, "Message updated");
-  } else {
-    this->send_json_error(request, 500, "Failed to update message");
-  }
+  this->send_json_success(request, "Message update scheduled");
 }
 
 void B48WebHandler::handle_api_messages_delete(AsyncWebServerRequest *request, int message_id) {
@@ -491,15 +458,12 @@ void B48WebHandler::handle_api_messages_delete(AsyncWebServerRequest *request, i
     return;
   }
 
-  // Use controller method which triggers cache refresh
-  std::lock_guard<std::mutex> lock(this->controller_->get_message_mutex());
-  bool success = this->controller_->delete_persistent_message(message_id);
+  ESP_LOGD(TAG, "Scheduling delete for message %d", message_id);
 
-  if (success) {
-    this->send_json_success(request, "Message deleted");
-  } else {
-    this->send_json_error(request, 500, "Failed to delete message");
-  }
+  // Schedule delete in main loop (avoids httpd stack overflow)
+  this->controller_->schedule_delete_message(message_id);
+
+  this->send_json_success(request, "Message deletion scheduled");
 }
 
 void B48WebHandler::handle_api_messages_clear(AsyncWebServerRequest *request) {
@@ -508,8 +472,7 @@ void B48WebHandler::handle_api_messages_clear(AsyncWebServerRequest *request) {
     return;
   }
 
-  // Use controller method which triggers cache refresh and clears ephemeral messages
-  std::lock_guard<std::mutex> lock(this->controller_->get_message_mutex());
+  // Use controller method which triggers cache refresh (controller handles its own locking)
   bool success = this->controller_->clear_all_messages();
 
   if (success) {

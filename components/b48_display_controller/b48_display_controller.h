@@ -180,6 +180,44 @@ class B48DisplayController : public Component {
    */
   bool clear_all_messages();
 
+  // --- Deferred operations for web handler (to avoid stack overflow in httpd task) ---
+  struct PendingWebOperation {
+    enum Type { NONE, CREATE, UPDATE, DELETE } type = NONE;
+    int message_id = 0;
+    int priority = 50;
+    int line_number = 0;
+    int tarif_zone = 0;
+    int duration_seconds = 0;
+    std::string static_intro;
+    std::string scrolling_message;
+    std::string next_message_hint;
+  };
+
+  /**
+   * @brief Schedule a message creation to be processed in main loop.
+   * This avoids stack overflow in the httpd task.
+   */
+  void schedule_add_message(int priority, int line_number, int tarif_zone, const std::string &static_intro,
+                            const std::string &scrolling_message, const std::string &next_message_hint,
+                            int duration_seconds);
+
+  /**
+   * @brief Schedule a message update to be processed in main loop.
+   */
+  void schedule_update_message(int message_id, int priority, int line_number, int tarif_zone,
+                               const std::string &static_intro, const std::string &scrolling_message,
+                               const std::string &next_message_hint, int duration_seconds);
+
+  /**
+   * @brief Schedule a message deletion to be processed in main loop.
+   */
+  void schedule_delete_message(int message_id);
+
+  /**
+   * @brief Process any pending web operations. Called from loop().
+   */
+  void process_pending_web_operations();
+
  protected:
   // Database methods
   bool init_database();
@@ -292,6 +330,10 @@ class B48DisplayController : public Component {
 
   // Helper to schedule refresh of message cache on loopTask
   std::atomic<bool> pending_message_cache_refresh_{false};
+
+  // Pending web operation (processed in main loop to avoid httpd stack overflow)
+  PendingWebOperation pending_web_op_;
+  std::atomic<bool> has_pending_web_op_{false};
 
   bool first_cycle_in_state_{true};
 

@@ -167,6 +167,9 @@ void B48DisplayController::loop() {
     update_ha_queue_size();
   }
 
+  // Process any pending web operations (deferred from httpd to avoid stack overflow)
+  this->process_pending_web_operations();
+
   // Check for time test mode
   if (this->time_test_mode_active_) {
     // Run the time test mode state machine
@@ -422,6 +425,83 @@ bool B48DisplayController::clear_all_messages() {
   return success;
 }
 
+// --- Deferred web operations (to avoid httpd stack overflow) ---
+
+void B48DisplayController::schedule_add_message(int priority, int line_number, int tarif_zone,
+                                                 const std::string &static_intro, const std::string &scrolling_message,
+                                                 const std::string &next_message_hint, int duration_seconds) {
+  ESP_LOGD(TAG, "Scheduling add_message operation for main loop");
+  this->pending_web_op_.type = PendingWebOperation::CREATE;
+  this->pending_web_op_.priority = priority;
+  this->pending_web_op_.line_number = line_number;
+  this->pending_web_op_.tarif_zone = tarif_zone;
+  this->pending_web_op_.static_intro = static_intro;
+  this->pending_web_op_.scrolling_message = scrolling_message;
+  this->pending_web_op_.next_message_hint = next_message_hint;
+  this->pending_web_op_.duration_seconds = duration_seconds;
+  this->has_pending_web_op_.store(true);
+}
+
+void B48DisplayController::schedule_update_message(int message_id, int priority, int line_number, int tarif_zone,
+                                                    const std::string &static_intro, const std::string &scrolling_message,
+                                                    const std::string &next_message_hint, int duration_seconds) {
+  ESP_LOGD(TAG, "Scheduling update_message operation for main loop (ID: %d)", message_id);
+  this->pending_web_op_.type = PendingWebOperation::UPDATE;
+  this->pending_web_op_.message_id = message_id;
+  this->pending_web_op_.priority = priority;
+  this->pending_web_op_.line_number = line_number;
+  this->pending_web_op_.tarif_zone = tarif_zone;
+  this->pending_web_op_.static_intro = static_intro;
+  this->pending_web_op_.scrolling_message = scrolling_message;
+  this->pending_web_op_.next_message_hint = next_message_hint;
+  this->pending_web_op_.duration_seconds = duration_seconds;
+  this->has_pending_web_op_.store(true);
+}
+
+void B48DisplayController::schedule_delete_message(int message_id) {
+  ESP_LOGD(TAG, "Scheduling delete_message operation for main loop (ID: %d)", message_id);
+  this->pending_web_op_.type = PendingWebOperation::DELETE;
+  this->pending_web_op_.message_id = message_id;
+  this->has_pending_web_op_.store(true);
+}
+
+void B48DisplayController::process_pending_web_operations() {
+  if (!this->has_pending_web_op_.exchange(false)) {
+    return;  // No pending operation
+  }
+
+  ESP_LOGI(TAG, "Processing pending web operation type: %d", static_cast<int>(this->pending_web_op_.type));
+
+  // Take the mutex to prevent concurrent SQLite access with httpd task
+  std::lock_guard<std::mutex> lock(this->message_mutex_);
+
+  switch (this->pending_web_op_.type) {
+    case PendingWebOperation::CREATE:
+      this->add_message(this->pending_web_op_.priority, this->pending_web_op_.line_number,
+                        this->pending_web_op_.tarif_zone, this->pending_web_op_.static_intro,
+                        this->pending_web_op_.scrolling_message, this->pending_web_op_.next_message_hint,
+                        this->pending_web_op_.duration_seconds, "WebUI", false);
+      break;
+
+    case PendingWebOperation::UPDATE:
+      this->update_message(this->pending_web_op_.message_id, this->pending_web_op_.priority, true,
+                           this->pending_web_op_.line_number, this->pending_web_op_.tarif_zone,
+                           this->pending_web_op_.static_intro, this->pending_web_op_.scrolling_message,
+                           this->pending_web_op_.next_message_hint, this->pending_web_op_.duration_seconds, "WebUI");
+      break;
+
+    case PendingWebOperation::DELETE:
+      this->delete_persistent_message(this->pending_web_op_.message_id);
+      break;
+
+    default:
+      break;
+  }
+
+  // Clear the operation
+  this->pending_web_op_.type = PendingWebOperation::NONE;
+}
+
 // New method to wipe and reinitialize the database and clear RAM cache
 bool B48DisplayController::wipe_and_reinitialize_database() {
   ESP_LOGW(TAG, "Wiping and reinitializing database...");
@@ -479,19 +559,25 @@ bool B48DisplayController::refresh_message_cache() {
     return false;
   }
 
-  // Perform database query outside of mutex lock to avoid blocking other tasks
-  ESP_LOGD(TAG, "Querying persistent messages from database outside lock...");
+  // Must hold mutex during database query to prevent concurrent SQLite access
+  // from httpd task (web handler also uses this mutex for DB operations)
+  std::lock_guard<std::mutex> lock(this->message_mutex_);
+
+  ESP_LOGD(TAG, "Querying persistent messages from database...");
   auto new_persistent = this->db_manager_->get_active_persistent_messages();
   ESP_LOGD(TAG, "Database returned %d persistent messages", new_persistent.size());
 
-  // Now update the cache under lock
-  {
-    std::lock_guard<std::mutex> lock(this->message_mutex_);
-    this->persistent_messages_ = std::move(new_persistent);
+  // Update the cache (already under lock)
+  this->persistent_messages_ = std::move(new_persistent);
+
+  // Update HA sensor with new queue size (must release lock first to avoid deadlock)
+  // Note: update_ha_queue_size takes the lock internally, but we're already holding it
+  // So we need to call the sensor publish directly without taking another lock
+  int total_messages = this->persistent_messages_.size() + this->ephemeral_messages_.size();
+  if (this->ha_integration_) {
+    this->ha_integration_->publish_queue_size(total_messages);
   }
 
-  // Update HA sensor with new queue size
-  update_ha_queue_size();
   return true;
 }
 
