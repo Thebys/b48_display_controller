@@ -401,6 +401,27 @@ bool B48DisplayController::delete_persistent_message(int message_id) {
   return success;
 }
 
+bool B48DisplayController::clear_all_messages() {
+  if (!this->db_manager_) {
+    ESP_LOGE(TAG, "Database manager is not initialized for clear_all_messages");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Clearing all messages from database");
+  bool success = this->db_manager_->clear_all_messages();
+
+  if (success) {
+    // Also clear ephemeral messages
+    {
+      std::lock_guard<std::mutex> lock(this->message_mutex_);
+      this->ephemeral_messages_.clear();
+    }
+    this->pending_message_cache_refresh_.store(true);
+  }
+
+  return success;
+}
+
 // New method to wipe and reinitialize the database and clear RAM cache
 bool B48DisplayController::wipe_and_reinitialize_database() {
   ESP_LOGW(TAG, "Wiping and reinitializing database...");

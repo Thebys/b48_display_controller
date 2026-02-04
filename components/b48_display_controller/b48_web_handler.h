@@ -45,6 +45,8 @@ class B48WebHandler : public AsyncWebHandler, public Component {
   void handle_api_messages_delete(AsyncWebServerRequest *request, int message_id);
   void handle_api_messages_clear(AsyncWebServerRequest *request);
   void handle_api_status(AsyncWebServerRequest *request);
+  void handle_api_refresh(AsyncWebServerRequest *request);
+  void handle_api_restart(AsyncWebServerRequest *request);
 
   // UI Handler
   void handle_index(AsyncWebServerRequest *request);

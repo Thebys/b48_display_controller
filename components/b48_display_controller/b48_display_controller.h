@@ -168,6 +168,18 @@ class B48DisplayController : public Component {
    */
   std::mutex &get_message_mutex() { return this->message_mutex_; }
 
+  /**
+   * @brief Trigger a refresh of the message cache from database.
+   * Call this after modifying messages via web UI or other external sources.
+   */
+  void trigger_cache_refresh() { this->pending_message_cache_refresh_.store(true); }
+
+  /**
+   * @brief Clear all messages from database and cache.
+   * @return true if successful, false otherwise.
+   */
+  bool clear_all_messages();
+
  protected:
   // Database methods
   bool init_database();

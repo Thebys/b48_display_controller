@@ -159,7 +159,8 @@
             </div>
             <div>
                 <button class="btn" onclick="openAddModal()">+ Add Message</button>
-                <button class="btn btn-danger" onclick="clearAllMessages()">Clear All</button>
+                <button class="btn btn-secondary" onclick="refreshCache()">↻ Refresh</button>
+                <button class="btn btn-danger" onclick="restartDevice()">⏻ Restart</button>
             </div>
         </header>
 
@@ -414,18 +415,29 @@
             }
         }
 
-        async function clearAllMessages() {
-            if (!confirm('Are you sure you want to delete ALL messages?')) return;
+        async function refreshCache() {
             try {
-                // ESP-IDF doesn't support DELETE, use POST to /messages/clear
-                const res = await fetch(`${API_BASE}/messages/clear`, { method: 'POST' });
+                const res = await fetch(`${API_BASE}/refresh`, { method: 'POST' });
                 const result = await res.json();
                 if (result.error) throw new Error(result.error);
-                showAlert('All messages cleared', 'success');
+                showAlert('Cache refreshed - display will update shortly', 'success');
                 fetchMessages();
                 fetchStatus();
             } catch (e) {
                 showAlert('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function restartDevice() {
+            if (!confirm('Are you sure you want to restart the device?')) return;
+            try {
+                const res = await fetch(`${API_BASE}/restart`, { method: 'POST' });
+                const result = await res.json();
+                showAlert('Device restarting... Page will reload in 10 seconds.', 'success');
+                setTimeout(() => location.reload(), 10000);
+            } catch (e) {
+                showAlert('Device restarting...', 'success');
+                setTimeout(() => location.reload(), 10000);
             }
         }
 

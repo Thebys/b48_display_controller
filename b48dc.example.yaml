@@ -134,10 +134,21 @@ text_sensor:
     name: "Last Message"
     id: last_message
 
-button: # Keep other buttons if they exist
+button:
+  - platform: restart
+    name: "Espington Restart"
+    id: restart_button
+
   - platform: template
     name: "Dump Database"
     id: dump_database_button
     on_press:
       - lambda: |-
           id(display_controller).dump_database_for_diagnostics();
+
+  - platform: template
+    name: "Refresh Display Cache"
+    id: refresh_cache_button
+    on_press:
+      - lambda: |-
+          id(display_controller).trigger_cache_refresh();

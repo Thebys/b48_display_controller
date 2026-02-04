@@ -60,6 +60,18 @@ void B48WebHandler::handleRequest(AsyncWebServerRequest *request) {
     return;
   }
 
+  // API: Refresh cache endpoint (POST)
+  if ((url == std::string(API_BASE) + "/refresh" || url == std::string(API_BASE) + "/refresh/") && method == HTTP_POST) {
+    this->handle_api_refresh(request);
+    return;
+  }
+
+  // API: Restart device endpoint (POST)
+  if ((url == std::string(API_BASE) + "/restart" || url == std::string(API_BASE) + "/restart/") && method == HTTP_POST) {
+    this->handle_api_restart(request);
+    return;
+  }
+
   // API: Messages collection endpoints
   // Note: ESP-IDF web server only supports GET/POST/OPTIONS, so we use POST for all modifications:
   // - POST /messages = create new message
@@ -67,12 +79,6 @@ void B48WebHandler::handleRequest(AsyncWebServerRequest *request) {
   // - POST /messages/{id} = update message
   // - POST /messages/{id}/delete = delete message
   std::string messages_base = std::string(API_BASE) + "/messages";
-
-  // Handle /messages/clear (POST) - must check before generic /messages
-  if ((url == messages_base + "/clear" || url == messages_base + "/clear/") && method == HTTP_POST) {
-    this->handle_api_messages_clear(request);
-    return;
-  }
 
   if (url == messages_base || url == messages_base + "/") {
     if (method == HTTP_GET) {
@@ -467,8 +473,10 @@ void B48WebHandler::handle_api_messages_update(AsyncWebServerRequest *request, i
   ESP_LOGD(TAG, "Update message %d: priority=%d, line=%d, msg='%s'", message_id, priority, line_number,
            scrolling_message.c_str());
 
-  bool success = db->update_persistent_message(message_id, priority, is_enabled, line_number, tarif_zone, static_intro,
-                                               scrolling_message, next_message_hint, duration_seconds, "WebUI");
+  // Use controller method which triggers cache refresh
+  bool success = this->controller_->update_message(message_id, priority, is_enabled, line_number, tarif_zone,
+                                                   static_intro, scrolling_message, next_message_hint, duration_seconds,
+                                                   "WebUI");
 
   if (success) {
     this->send_json_success(request, "Message updated");
@@ -483,14 +491,9 @@ void B48WebHandler::handle_api_messages_delete(AsyncWebServerRequest *request, i
     return;
   }
 
+  // Use controller method which triggers cache refresh
   std::lock_guard<std::mutex> lock(this->controller_->get_message_mutex());
-  auto *db = this->controller_->get_database_manager();
-  if (db == nullptr) {
-    this->send_json_error(request, 500, "Database not initialized");
-    return;
-  }
-
-  bool success = db->delete_persistent_message(message_id);
+  bool success = this->controller_->delete_persistent_message(message_id);
 
   if (success) {
     this->send_json_success(request, "Message deleted");
@@ -505,20 +508,36 @@ void B48WebHandler::handle_api_messages_clear(AsyncWebServerRequest *request) {
     return;
   }
 
+  // Use controller method which triggers cache refresh and clears ephemeral messages
   std::lock_guard<std::mutex> lock(this->controller_->get_message_mutex());
-  auto *db = this->controller_->get_database_manager();
-  if (db == nullptr) {
-    this->send_json_error(request, 500, "Database not initialized");
-    return;
-  }
-
-  bool success = db->clear_all_messages();
+  bool success = this->controller_->clear_all_messages();
 
   if (success) {
     this->send_json_success(request, "All messages cleared");
   } else {
     this->send_json_error(request, 500, "Failed to clear messages");
   }
+}
+
+void B48WebHandler::handle_api_refresh(AsyncWebServerRequest *request) {
+  if (this->controller_ == nullptr) {
+    this->send_json_error(request, 500, "Controller not initialized");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Manual cache refresh triggered via API");
+  this->controller_->trigger_cache_refresh();
+  this->send_json_success(request, "Cache refresh triggered");
+}
+
+void B48WebHandler::handle_api_restart(AsyncWebServerRequest *request) {
+  ESP_LOGW(TAG, "Device restart requested via API");
+  this->send_json_success(request, "Device restarting...");
+
+  // Schedule restart after response is sent
+  App.schedule_dump_config();
+  delay(100);
+  App.safe_reboot();
 }
 
 void B48WebHandler::send_json_error(AsyncWebServerRequest *request, int code, const char *message) {
