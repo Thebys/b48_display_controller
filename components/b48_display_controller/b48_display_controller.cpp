@@ -833,8 +833,6 @@ void B48DisplayController::send_time_update() {
   this->last_time_sync_ = millis();
 }
 
-void B48DisplayController::send_invert_command() { this->serial_protocol_.send_invert_command(); }
-
 void B48DisplayController::switch_to_cycle(int cycle) { this->serial_protocol_.switch_to_cycle(cycle); }
 
 void B48DisplayController::send_commands_for_message(const std::shared_ptr<MessageEntry> &msg) {
@@ -1675,14 +1673,6 @@ void B48DisplayController::send_raw_buse_command(const std::string &raw_payload)
   }
   
   ESP_LOGD(TAG, "Processed payload for BUSE: (len %d) \"%s\"", processed_payload.length(), processed_payload.c_str());
-  // For more detailed byte logging if needed:
-  // std::string debug_bytes_str;
-  // for (char c : processed_payload) {
-  //   char hex_buf[4];
-  //   snprintf(hex_buf, sizeof(hex_buf), "%02X ", static_cast<unsigned char>(c));
-  //   debug_bytes_str += hex_buf;
-  // }
-  // ESP_LOGD(TAG, "Processed payload bytes: %s", debug_bytes_str.c_str());
 
   // Allow raw commands if state machine is paused OR if a test mode that takes over display is active.
   if (this->state_machine_paused_.load() || this->character_reverse_test_mode_active_ || this->time_test_mode_active_) {

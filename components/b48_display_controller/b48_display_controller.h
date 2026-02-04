@@ -34,10 +34,9 @@ class B48HAIntegration;
 // Display state enum
 enum DisplayState {
   TRANSITION_MODE,
-  MESSAGE_PREPARATION,
   DISPLAY_MESSAGE,
-  TIME_TEST_MODE,  // New state for time test mode
-  CHARACTER_REVERSE_TEST_MODE  // New state for character reverse test mode
+  TIME_TEST_MODE,
+  CHARACTER_REVERSE_TEST_MODE
 };
 
 class B48DisplayController : public Component {
@@ -189,7 +188,6 @@ class B48DisplayController : public Component {
   void send_scrolling_message(const std::string &text);
   void send_next_message_hint(const std::string &text);
   void send_time_update();
-  void send_invert_command();
   void switch_to_cycle(int cycle);
   void send_commands_for_message(const std::shared_ptr<MessageEntry> &msg);
 
@@ -212,17 +210,7 @@ class B48DisplayController : public Component {
   // Persistence test
   bool testDatabasePersistence();
 
-  // Legacy diagnostic tests (stubs for compatibility)
-  bool testFilesystemPersistence();
-  bool testSqliteSchemaPersistence();
-  bool testDatabaseMagicHeader();
-  bool testFilesystemTypeDetection();
-  bool testSqliteJournalMode();
-  bool testSyncAndFlush();
-  bool testDatabaseMessagesStats();
-  bool testLittleFSPersistenceAcrossReopen();
-
- private:  // Helper for test execution
+ private:
   // Member variables
   uart::UARTComponent *uart_{nullptr};
   std::string database_path_;

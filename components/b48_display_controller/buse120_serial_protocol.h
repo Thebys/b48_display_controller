@@ -74,11 +74,6 @@ class BUSE120SerialProtocol {
    * @param cycle The cycle number to switch to (typically 0-9)
    */
   void switch_to_cycle(int cycle);
-  
-  /**
-   * @brief Send invert command to toggle display inversion
-   */
-  void send_invert_command();
 
   /**
    * @brief Send a raw payload string directly to the display.

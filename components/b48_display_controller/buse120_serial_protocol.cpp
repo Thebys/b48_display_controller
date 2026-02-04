@@ -81,12 +81,6 @@ std::string BUSE120SerialProtocol::safe_truncate(const std::string &text, size_t
   return "";
 }
 
-void BUSE120SerialProtocol::send_invert_command() {
-  char payload[2];
-  snprintf(payload, sizeof(payload), "i");  // not tested to be working. Also try b for blinking.
-  send_command(payload);
-}
-
 void BUSE120SerialProtocol::send_line_number(int line) {
   char payload[5];
   snprintf(payload, sizeof(payload), "l%03d", line);

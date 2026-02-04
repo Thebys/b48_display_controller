@@ -16,41 +16,23 @@ namespace b48_display_controller {
 static const char *const TAG = "b48c.db";  // Tag for database manager
 
 // Helper function to force filesystem sync for a specific file
-// Uses multiple methods to maximize chance of data reaching flash
-// Note: esp32_arduino_sqlite3_lib VFS ignores fsync() return values,
-// so we call this explicitly after important database operations
+// Note: With PRAGMA synchronous=EXTRA, SQLite already handles fsync after transactions.
+// This is called only in destructor as a final safety measure.
 static bool sync_file_to_flash(const char *path) {
-  bool success = false;
-
-  // Method 1: Open file and call fsync on file descriptor
   int fd = open(path, O_RDONLY);
   if (fd >= 0) {
     int rc = fsync(fd);
     close(fd);
     if (rc == 0) {
       ESP_LOGD(TAG, "fsync() succeeded for %s", path);
-      success = true;
-    } else {
-      // errno=88 (ENOTSOCK) is a known LittleFS VFS bug - data may still be written
-      ESP_LOGW(TAG, "fsync() returned errno=%d for %s (may be LittleFS VFS quirk)", errno, path);
+      return true;
     }
-  } else {
-    ESP_LOGW(TAG, "Failed to open %s for sync, errno=%d", path, errno);
+    // errno=88 (ENOTSOCK) is a known LittleFS VFS quirk - data may still be written
+    ESP_LOGW(TAG, "fsync() returned errno=%d for %s (may be LittleFS VFS quirk)", errno, path);
+    return true;  // Consider success despite errno, as data likely persisted
   }
-
-  // Method 2: Use fopen/fflush/fclose as additional sync attempt
-  FILE *f = fopen(path, "r");
-  if (f) {
-    fflush(f);  // Flush any buffered data
-    fclose(f);
-    success = true;  // File was accessible
-  }
-
-  // Give the filesystem time to complete the write operation
-  delay(10);
-  yield();
-
-  return success;
+  ESP_LOGW(TAG, "Failed to open %s for sync, errno=%d", path, errno);
+  return false;
 }
 
 B48DatabaseManager::B48DatabaseManager(const std::string &db_path) : database_path_(db_path) {}
@@ -374,17 +356,7 @@ bool B48DatabaseManager::check_and_create_schema() {
     yield();
     esp_task_wdt_reset();
 
-    // Flush SQLite cache to ensure data is written
-    // NOTE: VACUUM was removed because it causes "out of memory" on ESP32
-    // We rely on sqlite3_db_cacheflush() and synchronous=FULL pragma instead
-    ESP_LOGD(TAG, "Flushing SQLite cache...");
-    sqlite3_db_cacheflush(this->db_);
-
-    // Give filesystem time to complete writes
-    delay(50);
-    yield();
-    esp_task_wdt_reset();
-
+    // With PRAGMA synchronous=EXTRA, SQLite handles fsync after each transaction
     ESP_LOGI(TAG, "Schema created and persisted to disk");
   }
 
@@ -873,13 +845,6 @@ int B48DatabaseManager::purge_disabled_messages() {
   int actually_deleted = sqlite3_changes(this->db_);
   ESP_LOGI(TAG, "Successfully purged %d disabled messages from database", actually_deleted);
 
-  // Flush cache to ensure deletions are written
-  // NOTE: VACUUM was removed because it causes "out of memory" on ESP32
-  sqlite3_db_cacheflush(this->db_);
-
-  yield();
-  esp_task_wdt_reset();
-
   return actually_deleted;
 }
 
@@ -978,18 +943,7 @@ bool B48DatabaseManager::bootstrap_default_messages() {
     return false;
   }
 
-  // Flush SQLite cache to ensure data is written to filesystem
-  // NOTE: VACUUM was removed because it causes "out of memory" on ESP32
-  // We rely on sqlite3_db_cacheflush() and synchronous=FULL pragma instead
-  ESP_LOGD(TAG, "Flushing SQLite cache after bootstrap...");
-  sqlite3_db_cacheflush(this->db_);
-
-  yield();
-  esp_task_wdt_reset();
-
-  // Give filesystem time to complete writes
-  delay(50);
-
+  // With PRAGMA synchronous=EXTRA, SQLite handles fsync after each transaction
   ESP_LOGI(TAG, "Successfully bootstrapped default messages.");
   return true;
 }
@@ -1061,17 +1015,6 @@ bool B48DatabaseManager::clear_all_messages() {
 
   int changes = sqlite3_changes(this->db_);
   ESP_LOGI(TAG, "Successfully cleared %d messages from the database.", changes);
-
-  // Optionally, reset the autoincrement counter if desired (use with caution)
-  // const char *reset_seq = "DELETE FROM sqlite_sequence WHERE name='messages';";
-  // rc = sqlite3_exec(this->db_, reset_seq, nullptr, nullptr, &err_msg);
-  // if (rc != SQLITE_OK) {
-  //   ESP_LOGW(TAG, "Failed to reset sequence for messages table: %s", err_msg);
-  //   sqlite3_free(err_msg);
-  //   // Continue anyway, not critical
-  // } else {
-  //   ESP_LOGD(TAG, "Reset autoincrement sequence for messages table.");
-  // }
 
   return true;
 }
@@ -1157,300 +1100,6 @@ void B48DatabaseManager::dump_all_messages() {
   esp_task_wdt_reset();  // Final watchdog reset
 
   ESP_LOGI(TAG, "======= DUMP COMPLETE: %d TOTAL MESSAGES (%d ENABLED) =======", count, get_message_count());
-}
-
-std::string B48DatabaseManager::convert_to_ascii(const std::string &str) {
-  std::string result;
-  result.reserve(str.length());  // Pre-allocate memory
-
-  for (size_t i = 0; i < str.length(); ++i) {
-    unsigned char c1 = static_cast<unsigned char>(str[i]);
-
-    if (c1 <= 0x7F) {  // Standard ASCII (0-127)
-      result += c1;
-    } else if (c1 >= 0xC2 && c1 <= 0xDF) {  // Start of a 2-byte UTF-8 sequence
-      if (i + 1 < str.length()) {
-        unsigned char c2 = static_cast<unsigned char>(str[i + 1]);
-        if ((c2 & 0xC0) == 0x80) {             // Check if c2 is a valid continuation byte (10xxxxxx)
-          uint16_t utf8_val = (c1 << 8) | c2;  // Combine bytes for switch case
-          char replacement = ' ';              // Default replacement
-
-          switch (utf8_val) {
-            // Czech & Slovak
-            case 0xC381:
-              replacement = 'A';
-              break;  // Á
-            case 0xC3A1:
-              replacement = 'a';
-              break;  // á
-            case 0xC48C:
-              replacement = 'C';
-              break;  // Č
-            case 0xC48D:
-              replacement = 'c';
-              break;  // č
-            case 0xC48E:
-              replacement = 'D';
-              break;  // Ď
-            case 0xC48F:
-              replacement = 'd';
-              break;  // ď
-            case 0xC389:
-              replacement = 'E';
-              break;  // É
-            case 0xC3A9:
-              replacement = 'e';
-              break;  // é
-            case 0xC49A:
-              replacement = 'E';
-              break;  // Ě
-            case 0xC49B:
-              replacement = 'e';
-              break;  // ě
-            case 0xC38D:
-              replacement = 'I';
-              break;  // Í
-            case 0xC3AD:
-              replacement = 'i';
-              break;  // í
-            case 0xC587:
-              replacement = 'N';
-              break;  // Ň
-            case 0xC588:
-              replacement = 'n';
-              break;  // ň
-            case 0xC393:
-              replacement = 'O';
-              break;  // Ó
-            case 0xC3B3:
-              replacement = 'o';
-              break;  // ó
-            case 0xC598:
-              replacement = 'R';
-              break;  // Ř
-            case 0xC599:
-              replacement = 'r';
-              break;  // ř
-            case 0xC5A0:
-              replacement = 'S';
-              break;  // Š
-            case 0xC5A1:
-              replacement = 's';
-              break;  // š
-            case 0xC5A4:
-              replacement = 'T';
-              break;  // Ť
-            case 0xC5A5:
-              replacement = 't';
-              break;  // ť
-            case 0xC39A:
-              replacement = 'U';
-              break;  // Ú
-            case 0xC3BA:
-              replacement = 'u';
-              break;  // ú
-            case 0xC5AE:
-              replacement = 'U';
-              break;  // Ů
-            case 0xC5AF:
-              replacement = 'u';
-              break;  // ů
-            case 0xC39D:
-              replacement = 'Y';
-              break;  // Ý
-            case 0xC3BD:
-              replacement = 'y';
-              break;  // ý
-            case 0xC5BD:
-              replacement = 'Z';
-              break;  // Ž
-            case 0xC5BE:
-              replacement = 'z';
-              break;  // ž
-
-            // German
-            case 0xC384:
-              replacement = 'A';
-              break;  // Ä
-            case 0xC3A4:
-              replacement = 'a';
-              break;  // ä
-            case 0xC396:
-              replacement = 'O';
-              break;  // Ö
-            case 0xC3B6:
-              replacement = 'o';
-              break;  // ö
-            case 0xC39C:
-              replacement = 'U';
-              break;  // Ü
-            case 0xC3BC:
-              replacement = 'u';
-              break;  // ü
-            case 0xC39F:
-              replacement = 's';
-              break;  // ß (often 'ss', simplified to 's')
-
-            // French (selected common)
-            case 0xC380:
-              replacement = 'A';
-              break;  // À
-            case 0xC3A0:
-              replacement = 'a';
-              break;  // à
-            case 0xC382:
-              replacement = 'A';
-              break;  // Â
-            case 0xC3A2:
-              replacement = 'a';
-              break;  // â
-            case 0xC387:
-              replacement = 'C';
-              break;  // Ç
-            case 0xC3A7:
-              replacement = 'c';
-              break;  // ç
-            case 0xC388:
-              replacement = 'E';
-              break;  // È
-            case 0xC3A8:
-              replacement = 'e';
-              break;  // è
-            case 0xC38A:
-              replacement = 'E';
-              break;  // Ê
-            case 0xC3AA:
-              replacement = 'e';
-              break;  // ê
-            case 0xC38B:
-              replacement = 'E';
-              break;  // Ë
-            case 0xC3AB:
-              replacement = 'e';
-              break;  // ë
-            case 0xC38E:
-              replacement = 'I';
-              break;  // Î
-            case 0xC3AE:
-              replacement = 'i';
-              break;  // î
-            case 0xC394:
-              replacement = 'O';
-              break;  // Ô
-            case 0xC3B4:
-              replacement = 'o';
-              break;  // ô
-            case 0xC592:
-              replacement = 'O';
-              break;  // Œ (OE ligature, simplified)
-            case 0xC593:
-              replacement = 'o';
-              break;  // œ (oe ligature, simplified)
-            case 0xC399:
-              replacement = 'U';
-              break;  // Ù
-            case 0xC3B9:
-              replacement = 'u';
-              break;  // ù
-            case 0xC39B:
-              replacement = 'U';
-              break;  // Û
-            case 0xC3BB:
-              replacement = 'u';
-              break;  // û
-
-            // Spanish
-            case 0xC391:
-              replacement = 'N';
-              break;  // Ñ
-            case 0xC3B1:
-              replacement = 'n';
-              break;  // ñ
-
-            // Polish (selected common)
-            case 0xC484:
-              replacement = 'A';
-              break;  // Ą
-            case 0xC485:
-              replacement = 'a';
-              break;  // ą
-            case 0xC486:
-              replacement = 'C';
-              break;  // Ć
-            case 0xC487:
-              replacement = 'c';
-              break;  // ć
-            case 0xC498:
-              replacement = 'E';
-              break;  // Ę
-            case 0xC499:
-              replacement = 'e';
-              break;  // ę
-            case 0xC581:
-              replacement = 'L';
-              break;  // Ł
-            case 0xC582:
-              replacement = 'l';
-              break;  // ł
-            case 0xC583:
-              replacement = 'N';
-              break;  // Ń
-            case 0xC584:
-              replacement = 'n';
-              break;  // ń
-            // Óó covered by Czech
-            case 0xC59A:
-              replacement = 'S';
-              break;  // Ś
-            case 0xC59B:
-              replacement = 's';
-              break;  // ś
-            case 0xC5B9:
-              replacement = 'Z';
-              break;  // Ź
-            case 0xC5BA:
-              replacement = 'z';
-              break;  // ź
-            case 0xC5BB:
-              replacement = 'Z';
-              break;  // Ż
-            case 0xC5BC:
-              replacement = 'z';
-              break;  // ż
-
-            // Add more 2-byte mappings as needed
-            default:
-              // If no specific mapping, use '?'
-              break;
-          }
-          result += replacement;
-          i++;  // Increment i because we've consumed c2
-        } else {
-          // Invalid UTF-8 sequence (c2 is not a continuation byte or string ends prematurely)
-          result += ' ';
-        }
-      } else {
-        // String ends prematurely after c1 indicated a 2-byte sequence
-        result += ' ';
-      }
-    } else if ((c1 >= 0xE0 && c1 <= 0xEF) || (c1 >= 0xF0 && c1 <= 0xF4)) {
-      // Start of a 3-byte or 4-byte UTF-8 sequence.
-      // For simplicity in an ASCII conversion, map these to '?' and advance index.
-      result += ' ';
-      if (c1 >= 0xE0 && c1 <= 0xEF) {  // 3-byte
-        i += 2;                        // Attempt to skip the next two bytes
-      } else {                         // 4-byte
-        i += 3;                        // Attempt to skip the next three bytes
-      }
-      // Ensure we don't skip past the end of the string
-      if (i >= str.length()) {
-        i = str.length() - 1;  // Adjust if we skipped too far
-      }
-    } else {  // Invalid UTF-8 start byte or other non-ASCII character not handled above
-      result += ' ';
-    }
-  }
-  return result;
 }
 
 std::string B48DatabaseManager::sanitize_for_czech_display(const std::string &str) {

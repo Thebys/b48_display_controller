@@ -164,27 +164,16 @@ bool B48DisplayController::test_czech_character_preservation() {
   std::string czech_text = "Příští zastávka: Náměstí Míru";
 
   std::string sanitized = B48DatabaseManager::sanitize_for_czech_display(czech_text);
-  std::string ascii = B48DatabaseManager::convert_to_ascii(czech_text);
 
-  // Czech chars should be converted for display
+  // Czech chars should be converted for display (different from original UTF-8)
   bool czech_converted = (sanitized != czech_text);
 
-  // ASCII should be plain ASCII
-  bool ascii_plain = true;
-  for (char c : ascii) {
-    if ((unsigned char)c > 127) {
-      ascii_plain = false;
-      break;
-    }
-  }
-
-  bool passed = czech_converted && ascii_plain;
-  if (passed) {
+  if (czech_converted) {
     ESP_LOGI(TAG, "[PASS] test_czech_character_preservation");
   } else {
-    ESP_LOGE(TAG, "Czech conversion failed: converted=%d, ascii_plain=%d", czech_converted, ascii_plain);
+    ESP_LOGE(TAG, "Czech conversion failed: text was not converted");
   }
-  return passed;
+  return czech_converted;
 }
 
 bool B48DisplayController::test_czech_character_encoding() {
@@ -229,16 +218,6 @@ bool B48DisplayController::testDatabasePersistence() {
   ESP_LOGI(TAG, "[PASS] testDatabasePersistence: %d messages in DB", msg_count);
   return true;
 }
-
-// Stub implementations for removed diagnostic tests (kept for header compatibility)
-bool B48DisplayController::testFilesystemPersistence() { return true; }
-bool B48DisplayController::testSqliteSchemaPersistence() { return true; }
-bool B48DisplayController::testDatabaseMagicHeader() { return true; }
-bool B48DisplayController::testFilesystemTypeDetection() { return true; }
-bool B48DisplayController::testSqliteJournalMode() { return true; }
-bool B48DisplayController::testSyncAndFlush() { return true; }
-bool B48DisplayController::testDatabaseMessagesStats() { return true; }
-bool B48DisplayController::testLittleFSPersistenceAcrossReopen() { return true; }
 
 }  // namespace b48_display_controller
 }  // namespace esphome
