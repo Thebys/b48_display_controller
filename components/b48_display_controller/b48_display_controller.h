@@ -161,6 +161,13 @@ class B48DisplayController : public Component {
    */
   bool is_state_machine_paused() const;
 
+  /**
+   * @brief Get the message mutex for thread-safe database access.
+   * Use this to synchronize access from web server thread.
+   * @return Reference to the message mutex.
+   */
+  std::mutex &get_message_mutex() { return this->message_mutex_; }
+
  protected:
   // Database methods
   bool init_database();

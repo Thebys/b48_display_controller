@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>B48 Display Controller</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 0;
+            border-bottom: 1px solid #333;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        h1 { color: #0f9; font-size: 1.5rem; }
+        .status { font-size: 0.9rem; color: #888; }
+        .status span { color: #0f9; }
+        .btn {
+            background: #0f9;
+            color: #1a1a2e;
+            border: none;
+            padding: 0.6rem 1.2rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #0d8; }
+        .btn-danger { background: #f55; color: #fff; }
+        .btn-danger:hover { background: #d44; }
+        .btn-secondary { background: #444; color: #fff; }
+        .btn-secondary:hover { background: #555; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+        th { background: #252540; color: #0f9; font-weight: 600; }
+        tr:hover { background: #252540; }
+        .msg-text {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .actions { white-space: nowrap; }
+        .actions button { margin-right: 0.3rem; }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal.active { display: flex; }
+        .modal-content {
+            background: #252540;
+            padding: 1.5rem;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal h2 { margin-bottom: 1rem; color: #0f9; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.3rem;
+            color: #aaa;
+            font-size: 0.85rem;
+        }
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.6rem;
+            background: #1a1a2e;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #0f9;
+        }
+        .form-group textarea { min-height: 80px; resize: vertical; }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+        .alert {
+            padding: 0.75rem 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+            display: none;
+        }
+        .alert.success { background: #0f93; display: block; }
+        .alert.error { background: #f553; display: block; }
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #888;
+        }
+        .empty {
+            text-align: center;
+            padding: 3rem;
+            color: #666;
+        }
+        @media (max-width: 768px) {
+            .form-row { grid-template-columns: 1fr; }
+            table { font-size: 0.8rem; }
+            th, td { padding: 0.5rem; }
+            .msg-text { max-width: 150px; }
+            .hide-mobile { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>B48 Display Controller</h1>
+            <div class="status">
+                Messages: <span id="msg-count">-</span> |
+                Uptime: <span id="uptime">-</span>
+            </div>
+            <div>
+                <button class="btn" onclick="openAddModal()">+ Add Message</button>
+                <button class="btn btn-danger" onclick="clearAllMessages()">Clear All</button>
+            </div>
+        </header>
+
+        <div id="alert" class="alert"></div>
+
+        <div id="loading" class="loading">Loading messages...</div>
+        <div id="empty" class="empty" style="display:none">No messages in database. Click "Add Message" to create one.</div>
+
+        <table id="messages-table" style="display:none">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Pri</th>
+                    <th class="hide-mobile">Line</th>
+                    <th>Static Intro</th>
+                    <th>Scrolling Message</th>
+                    <th class="hide-mobile">Hint</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="messages-body"></tbody>
+        </table>
+    </div>
+
+    <!-- Add/Edit Modal -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <h2 id="modal-title">Add Message</h2>
+            <form id="msg-form">
+                <input type="hidden" id="msg-id">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="priority">Priority (0-100)</label>
+                        <input type="number" id="priority" min="0" max="100" value="50" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="line_number">Line Number</label>
+                        <input type="number" id="line_number" value="48">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="tarif_zone">Tarif Zone</label>
+                        <input type="number" id="tarif_zone" value="101">
+                    </div>
+                    <div class="form-group">
+                        <label for="duration">Duration (0=forever)</label>
+                        <input type="number" id="duration" min="0" value="0">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="static_intro">Static Intro</label>
+                    <input type="text" id="static_intro" placeholder="e.g. Base48">
+                </div>
+                <div class="form-group">
+                    <label for="scrolling_message">Scrolling Message *</label>
+                    <textarea id="scrolling_message" placeholder="Main message text..." required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="next_message_hint">Next Message Hint</label>
+                    <input type="text" id="next_message_hint" placeholder="e.g. Loading">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="delete-modal" class="modal">
+        <div class="modal-content">
+            <h2>Confirm Delete</h2>
+            <p style="margin: 1rem 0">Are you sure you want to delete this message?</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeDeleteModal()">Cancel</button>
+                <button class="btn btn-danger" onclick="confirmDelete()">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/b48/api/v1';
+        let deleteId = null;
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/status`);
+                const data = await res.json();
+                document.getElementById('msg-count').textContent = data.message_count;
+                const hrs = Math.floor(data.uptime_seconds / 3600);
+                const mins = Math.floor((data.uptime_seconds % 3600) / 60);
+                document.getElementById('uptime').textContent = `${hrs}h ${mins}m`;
+            } catch (e) {
+                console.error('Status fetch error:', e);
+            }
+        }
+
+        async function fetchMessages() {
+            const loading = document.getElementById('loading');
+            const empty = document.getElementById('empty');
+            const table = document.getElementById('messages-table');
+            const tbody = document.getElementById('messages-body');
+
+            loading.style.display = 'block';
+            empty.style.display = 'none';
+            table.style.display = 'none';
+
+            try {
+                const res = await fetch(`${API_BASE}/messages`);
+                const messages = await res.json();
+
+                loading.style.display = 'none';
+
+                if (messages.length === 0) {
+                    empty.style.display = 'block';
+                    return;
+                }
+
+                tbody.innerHTML = messages.map(m => `
+                    <tr>
+                        <td>${m.id}</td>
+                        <td>${m.priority}</td>
+                        <td class="hide-mobile">${m.line_number}</td>
+                        <td class="msg-text">${escapeHtml(m.static_intro)}</td>
+                        <td class="msg-text">${escapeHtml(m.scrolling_message)}</td>
+                        <td class="hide-mobile msg-text">${escapeHtml(m.next_message_hint)}</td>
+                        <td class="actions">
+                            <button class="btn btn-secondary btn-sm" onclick="editMessage(${m.id})">Edit</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteMessage(${m.id})">Del</button>
+                        </td>
+                    </tr>
+                `).join('');
+
+                table.style.display = 'table';
+            } catch (e) {
+                loading.textContent = 'Error loading messages';
+                console.error('Messages fetch error:', e);
+            }
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text.replace(/&/g, '&amp;')
+                       .replace(/</g, '&lt;')
+                       .replace(/>/g, '&gt;')
+                       .replace(/"/g, '&quot;');
+        }
+
+        function showAlert(message, type) {
+            const alert = document.getElementById('alert');
+            alert.textContent = message;
+            alert.className = 'alert ' + type;
+            setTimeout(() => { alert.className = 'alert'; }, 3000);
+        }
+
+        function openAddModal() {
+            document.getElementById('modal-title').textContent = 'Add Message';
+            document.getElementById('msg-id').value = '';
+            document.getElementById('priority').value = 50;
+            document.getElementById('line_number').value = 48;
+            document.getElementById('tarif_zone').value = 101;
+            document.getElementById('duration').value = 0;
+            document.getElementById('static_intro').value = '';
+            document.getElementById('scrolling_message').value = '';
+            document.getElementById('next_message_hint').value = '';
+            document.getElementById('modal').classList.add('active');
+        }
+
+        async function editMessage(id) {
+            try {
+                const res = await fetch(`${API_BASE}/messages/${id}`);
+                if (!res.ok) throw new Error('Message not found');
+                const m = await res.json();
+
+                document.getElementById('modal-title').textContent = 'Edit Message';
+                document.getElementById('msg-id').value = m.id;
+                document.getElementById('priority').value = m.priority;
+                document.getElementById('line_number').value = m.line_number;
+                document.getElementById('tarif_zone').value = m.tarif_zone;
+                document.getElementById('duration').value = m.duration_seconds || 0;
+                document.getElementById('static_intro').value = m.static_intro || '';
+                document.getElementById('scrolling_message').value = m.scrolling_message || '';
+                document.getElementById('next_message_hint').value = m.next_message_hint || '';
+                document.getElementById('modal').classList.add('active');
+            } catch (e) {
+                showAlert('Error loading message', 'error');
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.remove('active');
+        }
+
+        document.getElementById('msg-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const id = document.getElementById('msg-id').value;
+
+            // Build URL-encoded form data (ESP-IDF doesn't support application/json POST)
+            const params = new URLSearchParams();
+            params.append('priority', document.getElementById('priority').value);
+            params.append('line_number', document.getElementById('line_number').value);
+            params.append('tarif_zone', document.getElementById('tarif_zone').value);
+            params.append('duration_seconds', document.getElementById('duration').value);
+            params.append('static_intro', document.getElementById('static_intro').value);
+            params.append('scrolling_message', document.getElementById('scrolling_message').value);
+            params.append('next_message_hint', document.getElementById('next_message_hint').value);
+
+            try {
+                // ESP-IDF only supports GET/POST, so we use POST for both create and update
+                const url = id ? `${API_BASE}/messages/${id}` : `${API_BASE}/messages`;
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: params.toString()
+                });
+                const result = await res.json();
+                if (result.error) throw new Error(result.error);
+                showAlert(id ? 'Message updated' : 'Message created', 'success');
+                closeModal();
+                fetchMessages();
+                fetchStatus();
+            } catch (e) {
+                showAlert('Error: ' + e.message, 'error');
+            }
+        });
+
+        function deleteMessage(id) {
+            deleteId = id;
+            document.getElementById('delete-modal').classList.add('active');
+        }
+
+        function closeDeleteModal() {
+            document.getElementById('delete-modal').classList.remove('active');
+            deleteId = null;
+        }
+
+        async function confirmDelete() {
+            if (!deleteId) return;
+            try {
+                // ESP-IDF doesn't support DELETE, use POST to /messages/{id}/delete
+                const res = await fetch(`${API_BASE}/messages/${deleteId}/delete`, { method: 'POST' });
+                const result = await res.json();
+                if (result.error) throw new Error(result.error);
+                showAlert('Message deleted', 'success');
+                closeDeleteModal();
+                fetchMessages();
+                fetchStatus();
+            } catch (e) {
+                showAlert('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function clearAllMessages() {
+            if (!confirm('Are you sure you want to delete ALL messages?')) return;
+            try {
+                // ESP-IDF doesn't support DELETE, use POST to /messages/clear
+                const res = await fetch(`${API_BASE}/messages/clear`, { method: 'POST' });
+                const result = await res.json();
+                if (result.error) throw new Error(result.error);
+                showAlert('All messages cleared', 'success');
+                fetchMessages();
+                fetchStatus();
+            } catch (e) {
+                showAlert('Error: ' + e.message, 'error');
+            }
+        }
+
+        // Close modals on outside click
+        document.getElementById('modal').addEventListener('click', (e) => {
+            if (e.target.id === 'modal') closeModal();
+        });
+        document.getElementById('delete-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'delete-modal') closeDeleteModal();
+        });
+
+        // Initial load
+        fetchStatus();
+        fetchMessages();
+        // Refresh status every 30s
+        setInterval(fetchStatus, 30000);
+    </script>
+</body>
+</html>

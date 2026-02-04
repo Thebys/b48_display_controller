@@ -24,6 +24,10 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
+# Web server is required for the B48 web UI
+web_server:
+  port: 80
+
 api:
   encryption:
     key: !secret ota_key
@@ -103,12 +107,14 @@ b48_display_controller:
   transition_duration: 4
   time_sync_interval: 60
   emergency_priority_threshold: 95
-  min_seconds_between_repeats: 30
-  run_tests_on_startup: true
+  run_tests_on_startup: false  # Set to true to run display tests on boot
   wipe_database_on_boot: false
-  display_enable_pin: 5
+  display_enable_pin: 5  # Optional: GPIO pin to enable display power
   purge_interval_hours: 24  # Purge disabled messages from database every 24 hours
   message_queue_size_sensor: message_queue_size
+  # Web UI for CRUD administration of messages (requires web_server component)
+  web_ui:
+    enabled: true  # Access at http://<device-ip>/b48/
 
 sensor:
   - platform: uptime
