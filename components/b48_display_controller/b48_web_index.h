@@ -4,7 +4,7 @@
 
 #include "esphome/core/defines.h"
 
-#ifdef USE_NETWORK
+#ifdef USE_B48_WEB_UI
 
 // Size: 4023 bytes (gzip compressed)
 // Note: PROGMEM not used - ESP-IDF places const data in flash automatically
@@ -264,4 +264,4 @@ static const uint8_t B48_WEB_INDEX_HTML[] = {
 };
 static const size_t B48_WEB_INDEX_HTML_SIZE = 4023;
 
-#endif  // USE_NETWORK
+#endif  // USE_B48_WEB_UI

@@ -1,5 +1,5 @@
 #include "b48_web_handler.h"
-#ifdef USE_NETWORK
+#ifdef USE_B48_WEB_UI
 
 #include "b48_display_controller.h"
 #include "b48_database_manager.h"
@@ -549,4 +549,4 @@ int B48WebHandler::extract_message_id_from_url(const std::string &url) {
 }  // namespace b48_display_controller
 }  // namespace esphome
 
-#endif  // USE_NETWORK
+#endif  // USE_B48_WEB_UI

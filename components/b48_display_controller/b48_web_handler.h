@@ -1,7 +1,7 @@
 #pragma once
 
 #include "esphome/core/defines.h"
-#ifdef USE_NETWORK
+#ifdef USE_B48_WEB_UI
 
 #include "esphome/core/component.h"
 #include "esphome/components/web_server_base/web_server_base.h"
@@ -69,4 +69,4 @@ class B48WebHandler : public AsyncWebHandler, public Component {
 }  // namespace b48_display_controller
 }  // namespace esphome
 
-#endif  // USE_NETWORK
+#endif  // USE_B48_WEB_UI
