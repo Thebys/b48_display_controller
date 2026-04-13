@@ -848,6 +848,13 @@ int B48DatabaseManager::purge_disabled_messages() {
   int actually_deleted = sqlite3_changes(this->db_);
   ESP_LOGI(TAG, "Successfully purged %d disabled messages from database", actually_deleted);
 
+  // NOTE: VACUUM is intentionally not run here. While the VFS layer now
+  // supports xTruncate (with CONFIG_VFS_SUPPORT_DIR=y), VACUUM causes heap
+  // corruption on ESP32 — likely due to SQLite's intensive malloc/free pattern
+  // during the page-by-page database rewrite conflicting with FreeRTOS heap
+  // management. The DELETE above removes the rows; the file doesn't shrink
+  // but with typical DB sizes (<50KB) on a 512KB partition this is acceptable.
+
   return actually_deleted;
 }
 

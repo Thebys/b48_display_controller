@@ -11,7 +11,9 @@
 #include <unistd.h>
 
 // Only compile these stubs if they're not already provided
-#if defined(ESP_PLATFORM) && !defined(POSIX_COMPAT_PROVIDED)
+// When CONFIG_VFS_SUPPORT_DIR is enabled, ESP-IDF provides access() and rmdir()
+// natively via its VFS layer — these stubs are only needed without it.
+#if defined(ESP_PLATFORM) && !defined(POSIX_COMPAT_PROVIDED) && !defined(CONFIG_VFS_SUPPORT_DIR)
 
 extern "C" {
 
