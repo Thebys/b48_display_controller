@@ -101,12 +101,51 @@ void BUSE120SerialProtocol::send_static_intro(const std::string &text) {
 }
 
 void BUSE120SerialProtocol::send_scrolling_message(const std::string &text) {
-  // Convert Czech characters to display encoding first
+  // BUSE120 display accepts max ~230 bytes of encoded message content.
+  // Tested: 230 ASCII chars OK, 240 causes display corruption.
+  //
+  // Strategy: encode first, check length. If over limit, try to find a good
+  // cut point in the original UTF-8 text (sentence end with '.'), then re-encode.
+  // If no good cut point, hard truncate encoded output and append "...".
+  static constexpr size_t MAX_ENCODED_BYTES = 230;
+
   std::string encoded = encode_czech_characters(text);
-  // Safely truncate to 511 bytes without breaking multi-byte sequences
-  std::string truncated = safe_truncate(encoded, 511);
-  std::string payload = "zM " + truncated;
-  send_command(payload);
+
+  if (encoded.length() <= MAX_ENCODED_BYTES) {
+    std::string payload = "zM " + encoded;
+    send_command(payload);
+    return;
+  }
+
+  ESP_LOGW("buse120", "Scrolling message too long: %zu encoded bytes (max %zu), truncating",
+           encoded.length(), MAX_ENCODED_BYTES);
+
+  // Try to find a sentence boundary (period followed by space) in original text
+  // Search backwards from an estimated safe character position
+  size_t estimated_chars = text.length() * MAX_ENCODED_BYTES / encoded.length();
+  std::string best_cut;
+
+  for (size_t i = estimated_chars; i > estimated_chars / 2; --i) {
+    if (i < text.length() && text[i] == '.' && (i + 1 >= text.length() || text[i + 1] == ' ')) {
+      std::string candidate = text.substr(0, i + 1);  // include the period
+      std::string candidate_encoded = encode_czech_characters(candidate);
+      if (candidate_encoded.length() <= MAX_ENCODED_BYTES) {
+        best_cut = candidate_encoded;
+        break;
+      }
+    }
+  }
+
+  if (!best_cut.empty()) {
+    std::string payload = "zM " + best_cut;
+    send_command(payload);
+  } else {
+    // No good sentence boundary — hard truncate and append "..."
+    std::string truncated = safe_truncate(encoded, MAX_ENCODED_BYTES - 3);
+    truncated += "...";
+    std::string payload = "zM " + truncated;
+    send_command(payload);
+  }
 }
 
 void BUSE120SerialProtocol::send_next_message_hint(const std::string &text) {
