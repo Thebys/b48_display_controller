@@ -42,12 +42,6 @@ void B48WebHandler::handleRequest(AsyncWebServerRequest *request) {
 
   ESP_LOGD(TAG, "Request: method=%d url=%s", method, url.c_str());
 
-  // Test endpoint
-  if (url == "/b48/test") {
-    this->handle_test(request);
-    return;
-  }
-
   // Admin UI (HTML)
   if ((url == "/b48" || url == "/b48/") && method == HTTP_GET) {
     this->handle_index(request);
@@ -75,7 +69,6 @@ void B48WebHandler::handleRequest(AsyncWebServerRequest *request) {
   // API: Messages collection endpoints
   // Note: ESP-IDF web server only supports GET/POST/OPTIONS, so we use POST for all modifications:
   // - POST /messages = create new message
-  // - POST /messages/clear = clear all messages
   // - POST /messages/{id} = update message
   // - POST /messages/{id}/delete = delete message
   std::string messages_base = std::string(API_BASE) + "/messages";
@@ -148,19 +141,6 @@ void B48WebHandler::handleRequest(AsyncWebServerRequest *request) {
   this->send_json_error(request, 404, "Not found");
 }
 
-void B48WebHandler::handleBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-  // Accumulate body data for POST/PUT requests
-  if (index == 0) {
-    this->body_buffer_.clear();
-    this->body_buffer_.reserve(total);
-  }
-  this->body_buffer_.append(reinterpret_cast<char *>(data), len);
-}
-
-void B48WebHandler::handle_test(AsyncWebServerRequest *request) {
-  request->send(200, "text/plain", "OK");
-}
-
 void B48WebHandler::handle_index(AsyncWebServerRequest *request) {
   // Serve gzipped HTML from embedded data
   // Use beginResponse (not beginResponse_P which is Arduino-specific)
@@ -221,57 +201,7 @@ void B48WebHandler::handle_api_messages_list(AsyncWebServerRequest *request) {
     if (!first)
       stream->print(",");
     first = false;
-
-    stream->print("{\"id\":");
-    stream->print(msg->message_id);
-    stream->print(",\"priority\":");
-    stream->print(msg->priority);
-    stream->print(",\"is_enabled\":true");
-    stream->print(",\"line_number\":");
-    stream->print(msg->line_number);
-    stream->print(",\"tarif_zone\":");
-    stream->print(msg->tarif_zone);
-    stream->print(",\"static_intro\":\"");
-    // Escape JSON string - use printf for single chars since print(char) outputs as number
-    for (char c : msg->static_intro) {
-      if (c == '"')
-        stream->print("\\\"");
-      else if (c == '\\')
-        stream->print("\\\\");
-      else if (c == '\n')
-        stream->print("\\n");
-      else if (c == '\r')
-        stream->print("\\r");
-      else
-        stream->printf("%c", c);
-    }
-    stream->print("\",\"scrolling_message\":\"");
-    for (char c : msg->scrolling_message) {
-      if (c == '"')
-        stream->print("\\\"");
-      else if (c == '\\')
-        stream->print("\\\\");
-      else if (c == '\n')
-        stream->print("\\n");
-      else if (c == '\r')
-        stream->print("\\r");
-      else
-        stream->printf("%c", c);
-    }
-    stream->print("\",\"next_message_hint\":\"");
-    for (char c : msg->next_message_hint) {
-      if (c == '"')
-        stream->print("\\\"");
-      else if (c == '\\')
-        stream->print("\\\\");
-      else if (c == '\n')
-        stream->print("\\n");
-      else if (c == '\r')
-        stream->print("\\r");
-      else
-        stream->printf("%c", c);
-    }
-    stream->print("\"}");
+    write_message_json(stream, msg);
   }
 
   stream->print("]");
@@ -296,55 +226,7 @@ void B48WebHandler::handle_api_messages_get(AsyncWebServerRequest *request, int 
   for (const auto &msg : messages) {
     if (msg->message_id == message_id) {
       AsyncResponseStream *stream = request->beginResponseStream("application/json");
-      stream->print("{\"id\":");
-      stream->print(msg->message_id);
-      stream->print(",\"priority\":");
-      stream->print(msg->priority);
-      stream->print(",\"is_enabled\":true");
-      stream->print(",\"line_number\":");
-      stream->print(msg->line_number);
-      stream->print(",\"tarif_zone\":");
-      stream->print(msg->tarif_zone);
-      stream->print(",\"static_intro\":\"");
-      for (char c : msg->static_intro) {
-        if (c == '"')
-          stream->print("\\\"");
-        else if (c == '\\')
-          stream->print("\\\\");
-        else if (c == '\n')
-          stream->print("\\n");
-        else if (c == '\r')
-          stream->print("\\r");
-        else
-          stream->printf("%c", c);
-      }
-      stream->print("\",\"scrolling_message\":\"");
-      for (char c : msg->scrolling_message) {
-        if (c == '"')
-          stream->print("\\\"");
-        else if (c == '\\')
-          stream->print("\\\\");
-        else if (c == '\n')
-          stream->print("\\n");
-        else if (c == '\r')
-          stream->print("\\r");
-        else
-          stream->printf("%c", c);
-      }
-      stream->print("\",\"next_message_hint\":\"");
-      for (char c : msg->next_message_hint) {
-        if (c == '"')
-          stream->print("\\\"");
-        else if (c == '\\')
-          stream->print("\\\\");
-        else if (c == '\n')
-          stream->print("\\n");
-        else if (c == '\r')
-          stream->print("\\r");
-        else
-          stream->printf("%c", c);
-      }
-      stream->print("\"}");
+      write_message_json(stream, msg);
       request->send(stream);
       return;
     }
@@ -466,22 +348,6 @@ void B48WebHandler::handle_api_messages_delete(AsyncWebServerRequest *request, i
   this->send_json_success(request, "Message deletion scheduled");
 }
 
-void B48WebHandler::handle_api_messages_clear(AsyncWebServerRequest *request) {
-  if (this->controller_ == nullptr) {
-    this->send_json_error(request, 500, "Controller not initialized");
-    return;
-  }
-
-  // Use controller method which triggers cache refresh (controller handles its own locking)
-  bool success = this->controller_->clear_all_messages();
-
-  if (success) {
-    this->send_json_success(request, "All messages cleared");
-  } else {
-    this->send_json_error(request, 500, "Failed to clear messages");
-  }
-}
-
 void B48WebHandler::handle_api_refresh(AsyncWebServerRequest *request) {
   if (this->controller_ == nullptr) {
     this->send_json_error(request, 500, "Controller not initialized");
@@ -501,6 +367,40 @@ void B48WebHandler::handle_api_restart(AsyncWebServerRequest *request) {
   App.schedule_dump_config();
   delay(100);
   App.safe_reboot();
+}
+
+void B48WebHandler::write_json_escaped(AsyncResponseStream *stream, const std::string &str) {
+  for (char c : str) {
+    if (c == '"')
+      stream->print("\\\"");
+    else if (c == '\\')
+      stream->print("\\\\");
+    else if (c == '\n')
+      stream->print("\\n");
+    else if (c == '\r')
+      stream->print("\\r");
+    else
+      stream->printf("%c", c);
+  }
+}
+
+void B48WebHandler::write_message_json(AsyncResponseStream *stream, const std::shared_ptr<MessageEntry> &msg) {
+  stream->print("{\"id\":");
+  stream->print(msg->message_id);
+  stream->print(",\"priority\":");
+  stream->print(msg->priority);
+  stream->print(",\"is_enabled\":true");
+  stream->print(",\"line_number\":");
+  stream->print(msg->line_number);
+  stream->print(",\"tarif_zone\":");
+  stream->print(msg->tarif_zone);
+  stream->print(",\"static_intro\":\"");
+  write_json_escaped(stream, msg->static_intro);
+  stream->print("\",\"scrolling_message\":\"");
+  write_json_escaped(stream, msg->scrolling_message);
+  stream->print("\",\"next_message_hint\":\"");
+  write_json_escaped(stream, msg->next_message_hint);
+  stream->print("\"}");
 }
 
 void B48WebHandler::send_json_error(AsyncWebServerRequest *request, int code, const char *message) {

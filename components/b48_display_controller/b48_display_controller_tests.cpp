@@ -4,19 +4,12 @@
 #include <sqlite3.h>
 #include <cstring>
 #include <unistd.h>
-#include <sys/stat.h>
 #include "esphome/core/hal.h"
 
 namespace esphome {
 namespace b48_display_controller {
 
 static const char *const TAG = "b48c.test";
-
-// Helper to check if file exists
-static bool file_exists(const char *path) {
-  struct stat st;
-  return (stat(path, &st) == 0);
-}
 
 // Helper to execute a single test safely
 bool B48DisplayController::executeTest(bool (B48DisplayController::*testMethod)(), const char *testName) {

@@ -4,8 +4,6 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/application.h"
-#include <sstream>
-#include <iomanip>
 #include <cstring>
 #include <algorithm>
 #include <memory>
@@ -45,8 +43,6 @@ static size_t get_file_size_vfs(const char *path) {
   }
   return 0;
 }
-static const char CR = 0x0D;  // Carriage Return for BUSE120 protocol
-
 // Destructor
 B48DisplayController::~B48DisplayController() {}
 
@@ -169,17 +165,10 @@ void B48DisplayController::loop() {
   // Process any pending web operations (deferred from httpd to avoid stack overflow)
   this->process_pending_web_operations();
 
-  // Check for time test mode
-  if (this->time_test_mode_active_) {
-    // Run the time test mode state machine
-    run_time_test_mode();
-    return;
-  }
-
   // Check for emergency messages first
   check_for_emergency_messages();
 
-  // State machine switch
+  // State machine switch - all modes including test modes dispatched via state_ enum
   switch (this->state_) {
     case TRANSITION_MODE:
       run_transition_mode();
@@ -295,15 +284,14 @@ bool B48DisplayController::add_message(int priority, int line_number, int tarif_
     {
       std::lock_guard<std::mutex> lock(this->message_mutex_);
       this->ephemeral_messages_.push_back(msg);
+      // Sort by descending priority while still holding the lock
+      std::sort(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
+                [](const std::shared_ptr<MessageEntry> &a, const std::shared_ptr<MessageEntry> &b) {
+                  return a->priority > b->priority;
+                });
       ESP_LOGD(TAG, "Ephemeral message added to RAM queue. Current ephemeral count: %d",
                this->ephemeral_messages_.size());
     }
-
-    // After adding a new ephemeral message
-    std::sort(this->ephemeral_messages_.begin(), this->ephemeral_messages_.end(),
-              [](const std::shared_ptr<MessageEntry> &a, const std::shared_ptr<MessageEntry> &b) {
-                return a->priority > b->priority;  // Sort by descending priority
-              });
 
     // If the message is above emergency threshold, force transition to display message
     if (priority >= this->emergency_priority_threshold_) {
@@ -634,6 +622,9 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
   yield();               // Yield to the OS before potentially long operation
   esp_task_wdt_reset();  // Reset watchdog timer
 
+  // Single round-robin index shared between weighted selection and fallback
+  static size_t last_persistent_index = 0;
+
   time_t now = time(nullptr);
   std::shared_ptr<MessageEntry> selected_message = nullptr;
   bool has_database = (this->db_manager_ != nullptr);
@@ -686,10 +677,6 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 
     // Add persistent messages if database is available
     if (has_database && !persistent_copy.empty()) {
-      static size_t last_persistent_index = 0;
-
-      // Add ALL persistent messages to candidates, not just a limited number
-      // This ensures we consider the entire message pool
       for (size_t i = 0; i < persistent_copy.size(); i++) {
         auto msg = persistent_copy[i];
 
@@ -822,8 +809,6 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 
       // Update the round-robin index for persistent messages
       if (!selected_message->is_ephemeral && has_database) {
-        static size_t last_persistent_index = 0;
-        // Find the index of this message in persistent_copy
         for (size_t i = 0; i < persistent_copy.size(); i++) {
           if (persistent_copy[i]->message_id == selected_message->message_id) {
             last_persistent_index = (i + 1) % persistent_copy.size();
@@ -839,8 +824,6 @@ std::shared_ptr<MessageEntry> B48DisplayController::select_next_message() {
 
     // Fall back to a simple selection if we have no candidates with positive weights
     else if (has_database && !persistent_copy.empty()) {
-      static size_t last_persistent_index = 0;
-
       ESP_LOGW(TAG, "Weighted selection algorithm found no suitable candidates, falling back to round-robin");
 
       // Only use the fallback if there are actually persistent messages available
@@ -1051,8 +1034,8 @@ void B48DisplayController::display_fallback_message() {
 }
 
 void B48DisplayController::check_for_emergency_messages() {
-  // Check we have sensible time to check
-  if (time(nullptr) - this->last_ephemeral_check_time_ < 1000) {
+  // Throttle to max once per second (last_ephemeral_check_time_ is epoch seconds)
+  if (time(nullptr) - this->last_ephemeral_check_time_ < 1) {
     return;
   }
   this->last_ephemeral_check_time_ = time(nullptr);
@@ -1273,42 +1256,7 @@ bool B48DisplayController::initialize_filesystem() {
 
   ESP_LOGI(TAG, "VFS file I/O test PASSED!");
 
-  // ============ BOOT COUNTER PERSISTENCE TEST ============
-  // This tests if basic file I/O survives reboots
-  const char *counter_path = "/littlefs/boot_counter.txt";
-  int boot_count = 0;
-
-  // Try to read existing counter
-  FILE *cf = fopen(counter_path, "r");
-  if (cf != NULL) {
-    char buf[16] = {0};
-    if (fgets(buf, sizeof(buf), cf) != NULL) {
-      boot_count = atoi(buf);
-    }
-    fclose(cf);
-  }
-
-  // Increment counter
-  boot_count++;
-
-  // Write new counter value
-  cf = fopen(counter_path, "w");
-  if (cf != NULL) {
-    fprintf(cf, "%d", boot_count);
-    fflush(cf);
-    fsync(fileno(cf));
-    fclose(cf);
-
-    ESP_LOGW(TAG, "========================================");
-    ESP_LOGW(TAG, "  BOOT COUNTER: %d", boot_count);
-    ESP_LOGW(TAG, "  (If this is always 1, persistence is broken)");
-    ESP_LOGW(TAG, "========================================");
-  } else {
-    ESP_LOGE(TAG, "Failed to write boot counter!");
-  }
-  // ========================================================
-
-  // Log filesystem stats again after mounting
+  // Log filesystem stats after mounting
   log_filesystem_stats();
 
   return true;

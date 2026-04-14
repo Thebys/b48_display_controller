@@ -8,15 +8,6 @@ namespace esphome {
 namespace b48_display_controller {
 
 /**
- * @brief Character mapping entry for display encoding
- */
-struct CharacterMapping {
-  std::string utf8_sequence;      // UTF-8 input sequence
-  std::string display_encoding;   // Display encoding (e.g., "\x0e\x20")
-  const char* description;        // Human-readable description
-};
-
-/**
  * @brief Character mapping manager for BUSE120 display
  * 
  * This class manages the mapping between UTF-8 characters (including emojis)

@@ -1,7 +1,5 @@
 #include "buse120_serial_protocol.h"
 #include "esphome/core/log.h"
-#include <sstream>
-#include <iomanip>
 #include <cstring>
 
 namespace esphome {
@@ -133,32 +131,7 @@ void BUSE120SerialProtocol::switch_to_cycle(int cycle) {
 }
 
 bool BUSE120SerialProtocol::send_raw_payload(const std::string &raw_payload) {
-  if (!this->uart_) {
-    ESP_LOGE(TAG, "UART not initialized for raw payload");
-    return false;
-  }
-
-  uint8_t checksum = calculate_checksum(raw_payload);
-
-  ESP_LOGV(TAG, "Sending raw payload: \"%s\"", raw_payload.c_str());
-  std::string debug_bytes;
-  for (char c : raw_payload) {
-    char hex[4];
-    snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(c));
-    debug_bytes += hex;
-  }
-  ESP_LOGV(TAG, "Raw payload bytes: %s", debug_bytes.c_str());
-
-  // Send payload
-  this->uart_->write_array(reinterpret_cast<const uint8_t *>(raw_payload.c_str()), raw_payload.length());
-
-  // Send terminator (CR)
-  this->uart_->write_byte(CR);
-
-  // Send checksum
-  this->uart_->write_byte(checksum);
-
-  return true;
+  return send_command(raw_payload);
 }
 
 }  // namespace b48_display_controller

@@ -4,9 +4,8 @@ from esphome.const import CONF_ID, CONF_UART_ID, CONF_PIN
 
 # Local constant for web_ui enabled flag
 CONF_ENABLED = "enabled"
-from esphome.components import uart, sensor, text_sensor
+from esphome.components import uart, sensor
 from esphome.components.sensor import Sensor
-from esphome.components.text_sensor import TextSensor
 from esphome.core import CORE
 
 # Declare dependencies
@@ -28,7 +27,6 @@ CONF_RUN_TESTS_ON_STARTUP = "run_tests_on_startup"
 CONF_WIPE_DATABASE_ON_BOOT = "wipe_database_on_boot"
 CONF_DISPLAY_ENABLE_PIN = "display_enable_pin"  # New testing-only configuration
 CONF_MESSAGE_QUEUE_SIZE_SENSOR = "message_queue_size_sensor"
-CONF_LAST_MESSAGE_SENSOR = "last_message_sensor"
 CONF_PURGE_INTERVAL_HOURS = "purge_interval_hours"  # New configuration for database maintenance
 CONF_WEB_UI = "web_ui"  # Web UI configuration block
 CONF_WEB_HANDLER_ID = "web_handler_id"  # Internal ID for web handler
@@ -64,7 +62,6 @@ CONFIG_SCHEMA = cv.All(
         # New option for testing purposes - pulls a pin high to enable the display
         cv.Optional(CONF_DISPLAY_ENABLE_PIN): cv.int_range(min=0, max=39),
         cv.Optional(CONF_MESSAGE_QUEUE_SIZE_SENSOR): cv.use_id(Sensor),
-        cv.Optional(CONF_LAST_MESSAGE_SENSOR): cv.use_id(TextSensor),
         cv.Optional(CONF_PURGE_INTERVAL_HOURS, default=24): cv.positive_int,  # Default to 24 hours
         cv.Optional(CONF_WEB_UI): WEB_UI_SCHEMA,  # Web UI configuration
     }).extend(cv.COMPONENT_SCHEMA),

@@ -5,6 +5,7 @@
 
 #include "esphome/core/component.h"
 #include "esphome/components/web_server_base/web_server_base.h"
+#include <memory>
 
 namespace esphome {
 namespace b48_display_controller {
@@ -34,7 +35,6 @@ class B48WebHandler : public AsyncWebHandler, public Component {
   // AsyncWebHandler interface
   bool canHandle(AsyncWebServerRequest *request) const override;
   void handleRequest(AsyncWebServerRequest *request) override;
-  void handleBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) override;
 
  protected:
   // API Handlers
@@ -43,7 +43,6 @@ class B48WebHandler : public AsyncWebHandler, public Component {
   void handle_api_messages_create(AsyncWebServerRequest *request);
   void handle_api_messages_update(AsyncWebServerRequest *request, int message_id);
   void handle_api_messages_delete(AsyncWebServerRequest *request, int message_id);
-  void handle_api_messages_clear(AsyncWebServerRequest *request);
   void handle_api_status(AsyncWebServerRequest *request);
   void handle_api_refresh(AsyncWebServerRequest *request);
   void handle_api_restart(AsyncWebServerRequest *request);
@@ -51,19 +50,15 @@ class B48WebHandler : public AsyncWebHandler, public Component {
   // UI Handler
   void handle_index(AsyncWebServerRequest *request);
 
-  // Test endpoint for routing verification
-  void handle_test(AsyncWebServerRequest *request);
-
   // Helper methods
   void send_json_error(AsyncWebServerRequest *request, int code, const char *message);
   void send_json_success(AsyncWebServerRequest *request, const char *message);
+  static void write_json_escaped(AsyncResponseStream *stream, const std::string &str);
+  void write_message_json(AsyncResponseStream *stream, const std::shared_ptr<struct MessageEntry> &msg);
   int extract_message_id_from_url(const std::string &url);
 
   web_server_base::WebServerBase *base_;
   B48DisplayController *controller_;
-
-  // Buffer for accumulating request body
-  std::string body_buffer_;
 };
 
 }  // namespace b48_display_controller

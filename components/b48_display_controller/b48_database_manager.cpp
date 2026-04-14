@@ -1135,39 +1135,12 @@ std::string B48DatabaseManager::sanitize_for_database_storage(const std::string 
       result += c1;
       i++;
     } else if (c1 >= 0xC2 && c1 <= 0xDF && i + 1 < str.length()) {
-      // 2-byte UTF-8 sequence
+      // 2-byte UTF-8 sequence - keep as-is (Czech characters etc.)
       unsigned char c2 = static_cast<unsigned char>(str[i + 1]);
       if ((c2 & 0xC0) == 0x80) {
-        uint16_t utf8_val = (c1 << 8) | c2;
-        
-        // Only convert specific problematic Unicode punctuation to ASCII
-        switch (utf8_val) {
-          case 0xE280A6:  // Unicode ellipsis … → ASCII dots
-            result += "...";
-            i += 2;
-            break;
-          case 0xE2809C:  // Left double quotation mark " → ASCII quote
-          case 0xE2809D:  // Right double quotation mark " → ASCII quote
-            result += "\"";
-            i += 2;
-            break;
-          case 0xE28098:  // Left single quotation mark ' → ASCII apostrophe
-          case 0xE28099:  // Right single quotation mark ' → ASCII apostrophe
-            result += "'";
-            i += 2;
-            break;
-          case 0xE28093:  // En dash – → ASCII hyphen
-          case 0xE28094:  // Em dash — → ASCII hyphen
-            result += "-";
-            i += 2;
-            break;
-          default:
-            // Keep all other characters (including Czech chars and emojis) as-is
-            result += c1;
-            result += c2;
-            i += 2;
-            break;
-        }
+        result += c1;
+        result += c2;
+        i += 2;
       } else {
         result += c1;
         i++;

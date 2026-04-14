@@ -4,7 +4,6 @@
 #include "character_mappings.h"
 #include <string>
 #include <cstdint>
-#include <memory>
 
 namespace esphome {
 namespace b48_display_controller {
