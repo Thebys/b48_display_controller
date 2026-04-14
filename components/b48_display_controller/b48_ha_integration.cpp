@@ -46,6 +46,10 @@ void B48HAIntegration::register_services_() {
   register_service(&B48HAIntegration::handle_start_character_reverse_test_service_, "start_char_test");
   register_service(&B48HAIntegration::handle_stop_character_reverse_test_service_, "stop_char_test");
   
+  // Register services for IBIS probe test mode
+  register_service(&B48HAIntegration::handle_start_ibis_probe_test_service_, "start_ibis_probe_test");
+  register_service(&B48HAIntegration::handle_stop_ibis_probe_test_service_, "stop_ibis_probe_test");
+
   // Register service for database maintenance
   register_service(&B48HAIntegration::handle_purge_disabled_messages_service_, "purge_disabled_messages");
 
@@ -165,6 +169,38 @@ void B48HAIntegration::handle_stop_character_reverse_test_service_() {
     ESP_LOGI(TAG, "Character reverse test mode stopped via HA service");
   } else {
     ESP_LOGE(TAG, "Cannot stop character reverse test mode - parent controller not available");
+  }
+}
+
+// --- IBIS Probe Test Service Handlers ---
+
+void B48HAIntegration::handle_start_ibis_probe_test_service_() {
+  ESP_LOGI(TAG, "Service start_ibis_probe_test called.");
+
+  if (parent_) {
+    if (parent_->is_ibis_probe_test_mode_active()) {
+      ESP_LOGW(TAG, "IBIS probe test mode is already active");
+      return;
+    }
+    parent_->start_ibis_probe_test_mode();
+    ESP_LOGI(TAG, "IBIS probe test mode started via HA service");
+  } else {
+    ESP_LOGE(TAG, "Cannot start IBIS probe test - parent controller not available");
+  }
+}
+
+void B48HAIntegration::handle_stop_ibis_probe_test_service_() {
+  ESP_LOGI(TAG, "Service stop_ibis_probe_test called.");
+
+  if (parent_) {
+    if (!parent_->is_ibis_probe_test_mode_active()) {
+      ESP_LOGW(TAG, "IBIS probe test mode is not active");
+      return;
+    }
+    parent_->stop_ibis_probe_test_mode();
+    ESP_LOGI(TAG, "IBIS probe test mode stopped via HA service");
+  } else {
+    ESP_LOGE(TAG, "Cannot stop IBIS probe test - parent controller not available");
   }
 }
 

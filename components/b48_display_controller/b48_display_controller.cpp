@@ -94,9 +94,8 @@ void B48DisplayController::setup() {
 
   // Setup the HA integration component right away - it doesn't need DB
   if (this->ha_integration_) {
-    ESP_LOGI(TAG, "Registering HA integration component...");
-    App.register_component(this->ha_integration_.get());  // Register HA integration component
-    // Explicitly call setup() since we're registering late (after ESPHome's setup phase)
+    ESP_LOGI(TAG, "Setting up HA integration component...");
+    // Explicitly call setup() since this component is created manually (not via YAML codegen)
     this->ha_integration_->setup();
   } else {
     ESP_LOGW(TAG, "HA integration component not initialized!");
@@ -194,6 +193,9 @@ void B48DisplayController::loop() {
     case CHARACTER_REVERSE_TEST_MODE:
       run_character_reverse_test_mode();
       break;
+    case IBIS_PROBE_TEST_MODE:
+      run_ibis_probe_test_mode();
+      break;
   }
 
   // Check ephemeral messages frequently (every 6 seconds)
@@ -244,6 +246,7 @@ void B48DisplayController::dump_config() {
   ESP_LOGCONFIG(TAG, "  Time Test Mode: Available via HA service");
   ESP_LOGCONFIG(TAG, "  Time Test Status: %s", this->time_test_mode_active_ ? "Active" : "Inactive");
   ESP_LOGCONFIG(TAG, "  Character Reverse Test Status: %s", this->character_reverse_test_mode_active_ ? "Active" : "Inactive");
+  ESP_LOGCONFIG(TAG, "  IBIS Probe Test Status: %s", this->ibis_probe_test_active_ ? "Active" : "Inactive");
   ESP_LOGCONFIG(TAG, "  State Machine Status: %s", this->state_machine_paused_.load() ? "Paused" : "Running");
 
   // Log cache info
@@ -1477,6 +1480,11 @@ bool B48DisplayController::purge_disabled_messages() {
     return false;
   }
 
+  // Lock the mutex to prevent concurrent SQLite access from the httpd task.
+  // SQLITE_THREADSAFE=0 means SQLite has no internal mutexes — all access
+  // to the same db handle must be serialized externally.
+  std::lock_guard<std::mutex> lock(this->message_mutex_);
+
   int purged_count = this->db_manager_->purge_disabled_messages();
 
   if (purged_count < 0) {
@@ -1752,6 +1760,186 @@ void B48DisplayController::stop_character_reverse_test_mode() {
   }
 }
 
+// --- IBIS Probe Test Mode ---
+
+// Each probe step: {description for log, IBIS payload to send, which cycle to show it on}
+struct IbisProbeStep {
+  const char *description;
+  const char *payload;
+  int cycle;  // -1 = don't switch cycle
+};
+
+static const IbisProbeStep IBIS_PROBE_STEPS[] = {
+  // --- Already known working commands (baseline) ---
+  {"[baseline] l048 - line number", "l048", -1},
+  {"[baseline] zI Test IBIS", "zI Test IBIS", -1},
+  {"[baseline] zM Probe test running", "zM IBIS probe test - sleduj displej a zaznamenavej zmeny", -1},
+  {"[baseline] v Probe", "v Probe", -1},
+  {"[baseline] xC0 - cycle 0", nullptr, 0},
+
+  // --- Alternative destination text commands ---
+  {"zA PROBE-zA - non-addressed dest text", "zA PROBE-zA", 0},
+  {"aA PROBE-aA - addressed dest text", "aA PROBE-aA", 0},
+  {"zI PROBE-zI - restore zI", "zI PROBE-zI", 0},
+
+  // --- 4-digit destination code ---
+  {"zC1234 - 4-digit dest code", "zC1234", 0},
+  {"zC0048 - 4-digit dest code 48", "zC0048", 0},
+
+  // --- Extended destination text (BSEdit) ---
+  {"zE PROBE-zE - extended dest?", "zE PROBE-zE", 0},
+
+  // --- Next stop variations ---
+  {"zD001 - next stop number", "zD001", -1},
+  {"zD002 - next stop number 2", "zD002", -1},
+  {"zN NACESTNA - intermediate stop text", "zN NACESTNA", -1},
+  {"xB001 - intermediate stop code", "xB001", -1},
+
+  // --- Line number variations ---
+  {"lA0048 - 4-digit non-addr line", "lA0048", -1},
+  {"aL0048 - 4-digit addr line", "aL0048", -1},
+  {"l048 - restore 3-digit line", "l048", -1},
+
+  // --- Trip/order number ---
+  {"kA001 - trip/order number", "kA001", -1},
+
+  // --- Emergency/special info ---
+  {"xA001 - special info number", "xA001", 0},
+  {"xA000 - clear special info", "xA000", 0},
+
+  // --- Tariff zone variations ---
+  {"e000101 - tariff zone 101", "e000101", -1},
+  {"e000001 - tariff zone 1", "e000001", -1},
+
+  // --- Status/version queries (panel won't reply but might react visually) ---
+  {"a - status query", "a", -1},
+  {"aV - version query", "aV", -1},
+
+  // --- Cycle exploration ---
+  {"xC1 - try cycle 1", nullptr, 1},
+  {"xC2 - try cycle 2", nullptr, 2},
+  {"xC3 - try cycle 3", nullptr, 3},
+  {"xC4 - try cycle 4", nullptr, 4},
+  {"xC5 - try cycle 5", nullptr, 5},
+  {"xC6 - cycle 6 (known transition)", nullptr, 6},
+  {"xC7 - try cycle 7", nullptr, 7},
+  {"xC8 - try cycle 8", nullptr, 8},
+  {"xC9 - try cycle 9", nullptr, 9},
+  {"xC0 - back to cycle 0", nullptr, 0},
+
+  // --- Scrolling message with special chars ---
+  {"zM (arrows/special) >>===>>", "zM >>===>> PROBE >>===>>", 0},
+
+  // --- aSZ, aSL, aSC, aSD - query commands ---
+  {"aSZ - query dest number", "aSZ", -1},
+  {"aSL - query line number", "aSL", -1},
+  {"aSC - query 4-digit dest", "aSC", -1},
+  {"aSD - query stop number", "aSD", -1},
+
+  // --- Restore and finish ---
+  {"zI PROBE DONE", "zI PROBE DONE", -1},
+  {"zM Probe test complete - check log for results", "zM Probe hotov! Koukni do logu.", -1},
+  {"v Hotovo", "v Hotovo", -1},
+  {"xC0 - final cycle 0", nullptr, 0},
+};
+
+static constexpr int IBIS_PROBE_STEP_COUNT = sizeof(IBIS_PROBE_STEPS) / sizeof(IBIS_PROBE_STEPS[0]);
+
+void B48DisplayController::start_ibis_probe_test_mode() {
+  if (this->ibis_probe_test_active_) {
+    ESP_LOGW(TAG, "IBIS probe test already active");
+    return;
+  }
+  if (this->time_test_mode_active_ || this->character_reverse_test_mode_active_) {
+    ESP_LOGW(TAG, "Cannot start IBIS probe - another test mode is active");
+    return;
+  }
+
+  ESP_LOGW(TAG, "=== STARTING IBIS PROBE TEST ===");
+  ESP_LOGW(TAG, "Total probe steps: %d, interval: %lu ms", IBIS_PROBE_STEP_COUNT, IBIS_PROBE_INTERVAL_MS);
+  ESP_LOGW(TAG, "Watch the display and note which steps cause visible changes!");
+
+  this->ibis_probe_test_active_ = true;
+  this->current_probe_step_ = 0;
+  this->last_probe_update_ = millis();
+  this->state_ = IBIS_PROBE_TEST_MODE;
+  this->state_change_time_ = millis();
+
+  // Send initial setup
+  this->serial_protocol_.send_command("l048");
+  this->serial_protocol_.send_command("e000048");
+  this->serial_protocol_.send_command("zI IBIS PROBE");
+  this->serial_protocol_.send_command("zM Starting IBIS command probe test...");
+  this->serial_protocol_.send_command("v Probe start");
+  this->serial_protocol_.switch_to_cycle(0);
+}
+
+void B48DisplayController::run_ibis_probe_test_mode() {
+  if (!this->ibis_probe_test_active_) {
+    this->state_ = TRANSITION_MODE;
+    this->state_change_time_ = millis();
+    return;
+  }
+
+  if (this->current_probe_step_ >= IBIS_PROBE_STEP_COUNT) {
+    ESP_LOGW(TAG, "=== IBIS PROBE TEST COMPLETE ===");
+    stop_ibis_probe_test_mode();
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now - this->last_probe_update_ < IBIS_PROBE_INTERVAL_MS) {
+    return;
+  }
+
+  const auto &step = IBIS_PROBE_STEPS[this->current_probe_step_];
+
+  ESP_LOGW(TAG, "PROBE [%d/%d]: %s", this->current_probe_step_ + 1, IBIS_PROBE_STEP_COUNT, step.description);
+
+  // Send the payload if present
+  if (step.payload != nullptr) {
+    ESP_LOGI(TAG, "  Sending: '%s'", step.payload);
+    this->serial_protocol_.send_command(step.payload);
+  }
+
+  // Switch cycle if requested
+  if (step.cycle >= 0) {
+    ESP_LOGI(TAG, "  Switching to cycle %d", step.cycle);
+    this->serial_protocol_.switch_to_cycle(step.cycle);
+  }
+
+  yield();
+  esp_task_wdt_reset();
+
+  this->current_probe_step_++;
+  this->last_probe_update_ = now;
+}
+
+void B48DisplayController::stop_ibis_probe_test_mode() {
+  if (!this->ibis_probe_test_active_) {
+    ESP_LOGW(TAG, "IBIS probe test not active");
+    return;
+  }
+
+  ESP_LOGW(TAG, "Stopping IBIS probe test mode");
+  this->ibis_probe_test_active_ = false;
+
+  // Restore display
+  this->serial_protocol_.send_command("l048");
+  this->serial_protocol_.send_command("e000048");
+  this->serial_protocol_.send_command("zI Probe Done");
+  this->serial_protocol_.send_command("zM IBIS probe test finished. Check logs.");
+  this->serial_protocol_.send_command("v Normal");
+  this->serial_protocol_.switch_to_cycle(0);
+
+  if (!this->state_machine_paused_.load()) {
+    this->state_ = TRANSITION_MODE;
+    this->state_change_time_ = millis();
+    this->first_cycle_in_state_ = true;
+    this->should_interrupt_ = true;
+  }
+}
+
 // --- Raw BUSE Command and State Machine Control Implementations ---
 void B48DisplayController::send_raw_buse_command(const std::string &raw_payload) {
   ESP_LOGD(TAG, "Received HA request to send raw BUSE command (raw input): \"%s\"", raw_payload.c_str());
@@ -1782,7 +1970,7 @@ void B48DisplayController::send_raw_buse_command(const std::string &raw_payload)
   ESP_LOGD(TAG, "Processed payload for BUSE: (len %d) \"%s\"", processed_payload.length(), processed_payload.c_str());
 
   // Allow raw commands if state machine is paused OR if a test mode that takes over display is active.
-  if (this->state_machine_paused_.load() || this->character_reverse_test_mode_active_ || this->time_test_mode_active_) {
+  if (this->state_machine_paused_.load() || this->character_reverse_test_mode_active_ || this->time_test_mode_active_ || this->ibis_probe_test_active_) {
     this->serial_protocol_.send_raw_payload(processed_payload); // Send the processed payload
     ESP_LOGI(TAG, "Processed raw BUSE command sent.");
   } else {

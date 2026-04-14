@@ -848,12 +848,15 @@ int B48DatabaseManager::purge_disabled_messages() {
   int actually_deleted = sqlite3_changes(this->db_);
   ESP_LOGI(TAG, "Successfully purged %d disabled messages from database", actually_deleted);
 
-  // NOTE: VACUUM is intentionally not run here. While the VFS layer now
-  // supports xTruncate (with CONFIG_VFS_SUPPORT_DIR=y), VACUUM causes heap
-  // corruption on ESP32 — likely due to SQLite's intensive malloc/free pattern
-  // during the page-by-page database rewrite conflicting with FreeRTOS heap
-  // management. The DELETE above removes the rows; the file doesn't shrink
-  // but with typical DB sizes (<50KB) on a 512KB partition this is acceptable.
+  // NOTE: VACUUM is disabled on ESP32. While the VFS xTruncate implementation
+  // works correctly (tested with CONFIG_VFS_SUPPORT_DIR=y) and VACUUM completes
+  // successfully in single-task mode, it causes delayed FreeRTOS scheduler
+  // crashes when other tasks exist (e.g. httpd). Tested with SQLite 3.25.2 and
+  // 3.46.0, heap poisoning, various stack sizes — the crash persists whenever
+  // VACUUM runs in a multi-task environment. Root cause appears to be memory
+  // layout corruption during VACUUM's intensive malloc/free pattern that damages
+  // FreeRTOS task control blocks. The DELETE above removes the rows; the DB
+  // file doesn't shrink but with typical sizes (<50KB) this is acceptable.
 
   return actually_deleted;
 }

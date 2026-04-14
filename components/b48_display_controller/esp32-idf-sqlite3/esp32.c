@@ -442,7 +442,12 @@ int esp32_Read(sqlite3_file *id, void *buffer, int amount, sqlite3_int64 offset)
 		return SQLITE_OK;
 	}
 
-	dbg_printf("esp32_Read: 3r %s %u %d FAIL\n", file->name, nRead, amount);
+	/* Zero-fill unread portion — required by the SQLite VFS contract.
+	** Without this, short reads leave uninitialized data that can cause
+	** database corruption or unpredictable behavior during VACUUM. */
+	if ( nRead < amount )
+		memset((char*)buffer + nRead, 0, amount - nRead);
+	dbg_printf("esp32_Read: 3r %s %u %d SHORT\n", file->name, nRead, amount);
 	return SQLITE_IOERR_SHORT_READ;
 }
 

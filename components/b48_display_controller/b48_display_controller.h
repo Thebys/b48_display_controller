@@ -36,7 +36,8 @@ enum DisplayState {
   TRANSITION_MODE,
   DISPLAY_MESSAGE,
   TIME_TEST_MODE,
-  CHARACTER_REVERSE_TEST_MODE
+  CHARACTER_REVERSE_TEST_MODE,
+  IBIS_PROBE_TEST_MODE
 };
 
 class B48DisplayController : public Component {
@@ -127,6 +128,12 @@ class B48DisplayController : public Component {
   void run_character_reverse_test_mode();
   void stop_character_reverse_test_mode();
   bool is_character_reverse_test_mode_active() const { return character_reverse_test_mode_active_; }
+
+  // IBIS probe test mode methods
+  void start_ibis_probe_test_mode();
+  void run_ibis_probe_test_mode();
+  void stop_ibis_probe_test_mode();
+  bool is_ibis_probe_test_mode_active() const { return ibis_probe_test_active_; }
 
   // Database maintenance methods
   bool purge_disabled_messages();
@@ -323,6 +330,12 @@ class B48DisplayController : public Component {
   int current_character_test_value_{0}; // Character code to test
   unsigned long last_character_test_update_{0};
   static constexpr unsigned long CHARACTER_TEST_INTERVAL_MS = 30000; // 1 minute between updates
+
+  // IBIS probe test mode variables
+  bool ibis_probe_test_active_{false};
+  int current_probe_step_{0};
+  unsigned long last_probe_update_{0};
+  static constexpr unsigned long IBIS_PROBE_INTERVAL_MS = 6000; // 6 seconds per probe step
 
   // Database maintenance variables
   time_t last_purge_time_{0};
