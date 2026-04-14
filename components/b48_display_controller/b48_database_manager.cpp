@@ -143,6 +143,53 @@ bool B48DatabaseManager::initialize() {
   yield();
   esp_task_wdt_reset();
 
+  // --- Integrity Check ---
+  // Detect internally corrupted databases that have valid headers but malformed pages
+  if (file_exists && valid_sqlite_header) {
+    ESP_LOGI(TAG, "Running integrity check on existing database...");
+    sqlite3_stmt *integrity_stmt = nullptr;
+    rc = sqlite3_prepare_v2(this->db_, "PRAGMA integrity_check(1);", -1, &integrity_stmt, nullptr);
+    bool integrity_ok = false;
+    if (rc == SQLITE_OK && sqlite3_step(integrity_stmt) == SQLITE_ROW) {
+      const char *result = reinterpret_cast<const char *>(sqlite3_column_text(integrity_stmt, 0));
+      if (result && strcmp(result, "ok") == 0) {
+        integrity_ok = true;
+        ESP_LOGI(TAG, "Database integrity check passed.");
+      } else {
+        ESP_LOGE(TAG, "Database integrity check FAILED: %s", result ? result : "null");
+      }
+    } else {
+      ESP_LOGE(TAG, "Could not execute integrity check (rc=%d)", rc);
+    }
+    if (integrity_stmt) sqlite3_finalize(integrity_stmt);
+
+    if (!integrity_ok) {
+      ESP_LOGW(TAG, "Corrupted database detected — deleting and recreating...");
+      sqlite3_close(this->db_);
+      this->db_ = nullptr;
+      if (unlink(this->database_path_.c_str()) == 0) {
+        ESP_LOGI(TAG, "Removed corrupted database file, reopening fresh...");
+      } else {
+        ESP_LOGE(TAG, "Failed to remove corrupted database file, errno=%d", errno);
+        return false;
+      }
+      // Reopen with CREATE flag
+      rc = sqlite3_open_v2(this->database_path_.c_str(), &this->db_,
+                           SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
+      if (rc != SQLITE_OK) {
+        ESP_LOGE(TAG, "Failed to create fresh database: %s", sqlite3_errmsg(this->db_));
+        sqlite3_close(this->db_);
+        this->db_ = nullptr;
+        return false;
+      }
+      ESP_LOGI(TAG, "Fresh database created after corruption recovery.");
+    }
+
+    yield();
+    esp_task_wdt_reset();
+  }
+  // --- End Integrity Check ---
+
   // --- Set Page Size ---
   char *err_msg = nullptr;
   const char *pragma_page_size = "PRAGMA page_size=512;";
@@ -229,28 +276,35 @@ bool B48DatabaseManager::initialize() {
 bool B48DatabaseManager::wipe_database() {
   ESP_LOGW(TAG, "Wiping database as requested...");
 
-  if (!this->db_) {
-    ESP_LOGE(TAG, "Database connection is not open. Cannot wipe.");
-    return false;
+  yield();
+  esp_task_wdt_reset();
+
+  // Close the database connection first — never run SQL on a potentially corrupted DB
+  if (this->db_) {
+    sqlite3_close(this->db_);
+    this->db_ = nullptr;
+    ESP_LOGI(TAG, "Closed database connection before wipe.");
   }
 
-  yield();               // Yield to the OS before potentially long operation
-  esp_task_wdt_reset();  // Reset watchdog timer
+  yield();
+  esp_task_wdt_reset();
 
-  const char *drop_tables = "DROP TABLE IF EXISTS messages;";
-  char *err_msg = nullptr;
-
-  int rc = sqlite3_exec(this->db_, drop_tables, nullptr, nullptr, &err_msg);
-  if (rc != SQLITE_OK) {
-    ESP_LOGE(TAG, "SQL error during wipe: %s", err_msg);
-    sqlite3_free(err_msg);
-    return false;
+  // Delete the file directly — this is safe even if the DB is corrupted
+  if (unlink(this->database_path_.c_str()) == 0) {
+    ESP_LOGI(TAG, "Database file deleted successfully.");
+  } else {
+    // File might not exist, which is fine
+    ESP_LOGW(TAG, "Could not delete database file (errno=%d), may not exist.", errno);
   }
 
-  yield();               // Yield again after the operation
-  esp_task_wdt_reset();  // Reset watchdog timer
+  // Also remove any leftover journal file
+  std::string journal_path = this->database_path_ + "-journal";
+  unlink(journal_path.c_str());
 
-  ESP_LOGI(TAG, "Database tables successfully dropped");
+  yield();
+  esp_task_wdt_reset();
+
+  ESP_LOGI(TAG, "Database wiped. Reinitializing...");
   return true;
 }
 
